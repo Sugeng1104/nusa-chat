@@ -152,7 +152,7 @@ $('addMemberForm').addEventListener('submit',async e=>{
  e.preventDefault();if(!peer||peer.kind!=='group'||!self)return;
  const ids=[...$('addMemberList').querySelectorAll('input:checked')].map(el=>el.value);
  if(!ids.length){status('Pilih setidaknya satu pengguna untuk ditambahkan.');return;}
- if(ids.length>3){status('Maksimal 3 anggota baru dalam satu penambahan.');return;}
+ if(ids.length>1){status('Untuk pengujian ini, pilih 1 anggota baru saja.');return;}
  const btn=$('submitAddMember');btn.disabled=true;
  const groupId=peer.id;
  try{
@@ -165,7 +165,7 @@ $('addMemberForm').addEventListener('submit',async e=>{
   await updateDoc(ref,{members:arrayUnion(...approved)});
   if(peer?.kind==='group'&&peer.id===groupId)peer.members=[...new Set([...(peer.members||[]),...approved])];
   $('addMemberDialog').close();status(approved.length+' anggota berhasil ditambahkan ke grup.');
- }catch(err){status('Gagal menambah anggota: '+err.message+' Periksa izin pembaruan anggota grup di Firestore Rules.');}
+ }catch(err){status('Gagal menambah anggota ('+(err.code||'unknown')+'): '+err.message+' Pastikan Rules V3 sudah dipublikasikan.');}
  finally{btn.disabled=false;}
 });
 
