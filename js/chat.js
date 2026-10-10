@@ -152,6 +152,7 @@ $('addMemberForm').addEventListener('submit',async e=>{
  e.preventDefault();if(!peer||peer.kind!=='group'||!self)return;
  const ids=[...$('addMemberList').querySelectorAll('input:checked')].map(el=>el.value);
  if(!ids.length){status('Pilih setidaknya satu pengguna untuk ditambahkan.');return;}
+ if(ids.length>3){status('Maksimal 3 anggota baru dalam satu penambahan.');return;}
  const btn=$('submitAddMember');btn.disabled=true;
  const groupId=peer.id;
  try{
@@ -160,6 +161,7 @@ $('addMemberForm').addEventListener('submit',async e=>{
   if(!latest.exists()||!latest.data().members?.includes(self.uid))throw Error('Anda bukan anggota grup ini.');
   const approved=ids.filter(id=>contacts.some(u=>u.uid===id)&&!latest.data().members.includes(id));
   if(!approved.length)throw Error('Semua pengguna terpilih sudah menjadi anggota.');
+  if(latest.data().members.length+approved.length>20)throw Error('Grup maksimal 20 anggota.');
   await updateDoc(ref,{members:arrayUnion(...approved)});
   if(peer?.kind==='group'&&peer.id===groupId)peer.members=[...new Set([...(peer.members||[]),...approved])];
   $('addMemberDialog').close();status(approved.length+' anggota berhasil ditambahkan ke grup.');
