@@ -1,6 +1,6 @@
 import {initializeApp} from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
 import {getAuth,onAuthStateChanged,signOut,reload} from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
-import {getFirestore,doc,getDoc,collection,query,where,getDocs,onSnapshot,orderBy,limit,serverTimestamp,setDoc,addDoc} from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js';
+import {getFirestore,doc,getDoc,collection,query,where,getDocs,onSnapshot,orderBy,limit,serverTimestamp,setDoc,addDoc,updateDoc,arrayUnion} from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js';
 import {firebaseConfig} from './firebase-config.js';
 const app=initializeApp(firebaseConfig),auth=getAuth(app),db=getFirestore(app);
 const $=id=>document.getElementById(id);
@@ -53,7 +53,7 @@ $('confirmDeleteChat').addEventListener('click',()=>{
  hiddenChats.set(key,Date.now());saveHidden();unread.delete(key);
  if(peer && (peer.kind==='group'?'g:'+peer.id:'p:'+conversationId(self.uid,peer.uid))===key){
   if(stopMessages){stopMessages();stopMessages=null;}
-  peer=null;selectionToken++;$('chatWith').textContent='Pilih kontak untuk mulai percakapan';
+  peer=null;$('addGroupMember').hidden=true;selectionToken++;$('chatWith').textContent='Pilih kontak untuk mulai percakapan';
   $('messages').replaceChildren();$('messageText').value='';$('messageText').disabled=true;
   $('sendMessage').disabled=true;emojiToggle.disabled=true;setEmojiOpen(false);
   if(history.state?.nusaChat)history.back();else closeMobileChat();
@@ -124,12 +124,49 @@ function drawContacts(){const search=$('contactSearch').value.trim().toLowerCase
 function drawGroups(){const list=$('groups');list.replaceChildren();const search=$('contactSearch').value.trim().toLowerCase();const found=groups.filter(g=>!isHidden('g:'+g.id)&&g.name.toLowerCase().includes(search));if(!found.length){list.textContent='Belum ada grup.';return;}for(const g of found){const b=document.createElement('button');b.type='button';b.className='contact'+(peer?.kind==='group'&&peer.id===g.id?' selected':'');const name=document.createElement('strong');name.textContent='👥 '+g.name;const sub=document.createElement('small');sub.textContent=g.members.length+' anggota';b.append(name,sub);if(unread.has('g:'+g.id)){const mark=document.createElement('span');mark.className='unread-mark';mark.textContent='!';mark.title='Pesan baru';b.append(mark);}b.addEventListener('click',()=>selectGroup(g));const row=document.createElement('div');row.className='chat-entry';row.append(b);longPress(row,()=>openActions({type:'chat',key:'g:'+g.id,label:g.name}));list.append(row);}}
 function monitorMessages(key,ref,collectionPath,kind){if(watchers.has(key))return;const unsubscribe=onSnapshot(query(collection(ref,'messages'),orderBy('createdAt','desc'),limit(1)),snap=>{if(snap.empty){if(hasMessages.delete(key))drawContacts();return;}if(!hasMessages.has(key)){hasMessages.add(key);drawContacts();}const msg=snap.docs[0].data(),time=msg.createdAt?.toMillis?.();if(time&&msg.senderId!==self.uid)incomingAlert(key,msg,time);if(isHidden(key)&&time&&time>hiddenChats.get(key)&&msg.senderId!==self.uid){hiddenChats.delete(key);saveHidden();drawContacts();drawGroups();}if(isHidden(key))return;if(!time||msg.senderId===self.uid)return;const stored=lastSeen[key]??Number(localStorage.getItem(seenKey(key))||0);if(time>stored&&!(peer?.kind===kind&&((kind==='private'&&'p:'+conversationId(self.uid,peer.uid)===key)||(kind==='group'&&'g:'+peer.id===key))&&document.visibilityState==='visible')){unread.add(key);drawContacts();drawGroups();drawNotice();}else if(time>stored&&peer&&document.visibilityState==='visible'){markSeen(key);}},e=>{console.warn('Notifikasi tidak tersedia:',key,e.code);});watchers.set(key,unsubscribe);}
 function watchPrivate(){if(stopConversations)stopConversations();stopConversations=onSnapshot(query(collection(db,'conversations'),where('participants','array-contains',self.uid)),snap=>{const valid=new Set();for(const d of snap.docs){const v=d.data();if(!Array.isArray(v.participants)||v.participants.length!==2)continue;const key='p:'+d.id;valid.add(key);monitorMessages(key,d.ref,null,'private');}for(const [k,stop] of watchers){if(k.startsWith('p:')&&!valid.has(k)){stop();watchers.delete(k);unread.delete(k);hasMessages.delete(k);}}drawContacts();drawNotice();},e=>status('Notifikasi pribadi gagal: '+e.message));}
-function watchGroups(){if(stopGroups)stopGroups();stopGroups=onSnapshot(query(collection(db,'groups'),where('members','array-contains',self.uid)),snap=>{groups=snap.docs.map(d=>({id:d.id,...d.data()}));const valid=new Set();for(const d of snap.docs){const key='g:'+d.id;valid.add(key);monitorMessages(key,d.ref,null,'group');}for(const [k,stop] of watchers){if(k.startsWith('g:')&&!valid.has(k)){stop();watchers.delete(k);unread.delete(k);hasMessages.delete(k);}}drawGroups();drawNotice();},e=>status('Gagal memuat grup: '+e.message));}
+function watchGroups(){if(stopGroups)stopGroups();stopGroups=onSnapshot(query(collection(db,'groups'),where('members','array-contains',self.uid)),snap=>{groups=snap.docs.map(d=>({id:d.id,...d.data()}));if(peer?.kind==='group'){const latest=groups.find(g=>g.id===peer.id);if(latest)peer={...latest,kind:'group'};}const valid=new Set();for(const d of snap.docs){const key='g:'+d.id;valid.add(key);monitorMessages(key,d.ref,null,'group');}for(const [k,stop] of watchers){if(k.startsWith('g:')&&!valid.has(k)){stop();watchers.delete(k);unread.delete(k);hasMessages.delete(k);}}drawGroups();drawNotice();},e=>status('Gagal memuat grup: '+e.message));}
 function showMessages(snap,key){const area=$('messages');area.replaceChildren();if(snap.empty){const p=document.createElement('p');p.className='chat-empty';p.textContent='Belum ada pesan. Mulai percakapan!';area.append(p);return;}for(const d of snap.docs){const m=d.data();const hs=historyFor(key);if(hs.ids.includes(d.id)||(m.createdAt?.toMillis?.()||0)<=hs.cutoff)continue;const box=document.createElement('div');box.className='bubble'+(m.senderId===self.uid?' mine':'');box.textContent=m.text;box.dataset.messageId=d.id;box.tabIndex=0;box.title='Tekan dan tahan 1 detik untuk pilihan hapus';longPress(box,()=>openActions({type:'message',key,id:d.id}));const time=document.createElement('time');time.textContent=m.createdAt?.toDate?.().toLocaleString('id-ID',{dateStyle:'short',timeStyle:'short'})||'Mengirim...';box.append(time);area.append(box);}area.scrollTop=area.scrollHeight;}
 function conversationId(a,b){return [a,b].sort().join('_');}
 function startMessages(ref,key){stopMessages=onSnapshot(query(collection(ref,'messages'),orderBy('createdAt','desc'),limit(100)),s=>{showMessages({docs:[...s.docs].reverse(),empty:s.empty},key);if(document.visibilityState==='visible')markSeen(key);},e=>status('Gagal membaca pesan: '+e.message));}
-async function selectPeer(u){const keyForUnhide='p:'+conversationId(self.uid,u.uid);if(isHidden(keyForUnhide)){hiddenChats.delete(keyForUnhide);saveHidden();}openMobileChat();const token=++selectionToken;if(stopMessages){stopMessages();stopMessages=null;}peer={...u,kind:'private'};setEmojiOpen(false);emojiToggle.disabled=false;drawContacts();drawGroups();$('chatWith').textContent=u.name+' · '+schoolLabel(u);$('messageText').disabled=false;$('sendMessage').disabled=false;status('');const id=conversationId(self.uid,u.uid),key='p:'+id,ref=doc(db,'conversations',id);try{const existing=await getDoc(ref);if(!existing.exists())await setDoc(ref,{participants:[self.uid,u.uid].sort(),createdAt:serverTimestamp()});if(token!==selectionToken)return;markSeen(key);startMessages(ref,key);}catch(e){status('Tidak dapat membuka percakapan: '+e.message);}}
-async function selectGroup(g){const keyForUnhide='g:'+g.id;if(isHidden(keyForUnhide)){hiddenChats.delete(keyForUnhide);saveHidden();}openMobileChat();++selectionToken;if(stopMessages){stopMessages();stopMessages=null;}peer={...g,kind:'group'};setEmojiOpen(false);emojiToggle.disabled=false;drawContacts();drawGroups();$('chatWith').textContent='👥 '+g.name;$('messageText').disabled=false;$('sendMessage').disabled=false;status('');const key='g:'+g.id;markSeen(key);startMessages(doc(db,'groups',g.id),key);}
+async function selectPeer(u){const keyForUnhide='p:'+conversationId(self.uid,u.uid);if(isHidden(keyForUnhide)){hiddenChats.delete(keyForUnhide);saveHidden();}openMobileChat();const token=++selectionToken;if(stopMessages){stopMessages();stopMessages=null;}peer={...u,kind:'private'};$('addGroupMember').hidden=true;setEmojiOpen(false);emojiToggle.disabled=false;drawContacts();drawGroups();$('chatWith').textContent=u.name+' · '+schoolLabel(u);$('messageText').disabled=false;$('sendMessage').disabled=false;status('');const id=conversationId(self.uid,u.uid),key='p:'+id,ref=doc(db,'conversations',id);try{const existing=await getDoc(ref);if(!existing.exists())await setDoc(ref,{participants:[self.uid,u.uid].sort(),createdAt:serverTimestamp()});if(token!==selectionToken)return;markSeen(key);startMessages(ref,key);}catch(e){status('Tidak dapat membuka percakapan: '+e.message);}}
+async function selectGroup(g){const keyForUnhide='g:'+g.id;if(isHidden(keyForUnhide)){hiddenChats.delete(keyForUnhide);saveHidden();}openMobileChat();++selectionToken;if(stopMessages){stopMessages();stopMessages=null;}peer={...g,kind:'group'};$('addGroupMember').hidden=false;setEmojiOpen(false);emojiToggle.disabled=false;drawContacts();drawGroups();$('chatWith').textContent='👥 '+g.name;$('messageText').disabled=false;$('sendMessage').disabled=false;status('');const key='g:'+g.id;markSeen(key);startMessages(doc(db,'groups',g.id),key);}
+
+// Penambahan anggota ke grup yang sedang dibuka.
+function renderAddMembers(){
+ const list=$('addMemberList');list.replaceChildren();
+ if(!peer||peer.kind!=='group')return;
+ const q=$('addMemberSearch').value.trim().toLocaleLowerCase('id');
+ const existing=new Set(peer.members||[]);
+ const candidates=contacts.filter(u=>!existing.has(u.uid)&&contactLabel(u).toLocaleLowerCase('id').includes(q)).sort((a,b)=>a.name.localeCompare(b.name,'id'));
+ if(!candidates.length){const p=document.createElement('p');p.textContent='Tidak ada pengguna aktif lain yang cocok.';list.append(p);return;}
+ for(const u of candidates){const label=document.createElement('label'),cb=document.createElement('input'),span=document.createElement('span');cb.type='checkbox';cb.value=u.uid;span.textContent=contactLabel(u);label.append(cb,span);list.append(label);}
+}
+$('addGroupMember').addEventListener('click',()=>{
+ if(!peer||peer.kind!=='group')return;
+ $('addMemberGroupName').textContent='Grup: '+peer.name;
+ $('addMemberSearch').value='';renderAddMembers();$('addMemberDialog').showModal();
+});
+$('addMemberSearch').addEventListener('input',renderAddMembers);
+$('cancelAddMember').addEventListener('click',()=>$('addMemberDialog').close());
+$('addMemberForm').addEventListener('submit',async e=>{
+ e.preventDefault();if(!peer||peer.kind!=='group'||!self)return;
+ const ids=[...$('addMemberList').querySelectorAll('input:checked')].map(el=>el.value);
+ if(!ids.length){status('Pilih setidaknya satu pengguna untuk ditambahkan.');return;}
+ const btn=$('submitAddMember');btn.disabled=true;
+ const groupId=peer.id;
+ try{
+  const ref=doc(db,'groups',groupId);
+  const latest=await getDoc(ref);
+  if(!latest.exists()||!latest.data().members?.includes(self.uid))throw Error('Anda bukan anggota grup ini.');
+  const approved=ids.filter(id=>contacts.some(u=>u.uid===id)&&!latest.data().members.includes(id));
+  if(!approved.length)throw Error('Semua pengguna terpilih sudah menjadi anggota.');
+  await updateDoc(ref,{members:arrayUnion(...approved)});
+  if(peer?.kind==='group'&&peer.id===groupId)peer.members=[...new Set([...(peer.members||[]),...approved])];
+  $('addMemberDialog').close();status(approved.length+' anggota berhasil ditambahkan ke grup.');
+ }catch(err){status('Gagal menambah anggota: '+err.message+' Periksa izin pembaruan anggota grup di Firestore Rules.');}
+ finally{btn.disabled=false;}
+});
+
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&peer){const key=peer.kind==='group'?'g:'+peer.id:'p:'+conversationId(self.uid,peer.uid);markSeen(key);}});
 
 function renderNewMessageList(){
