@@ -5,7 +5,7 @@ const db=admin.firestore();
 const region='asia-southeast2';
 const clean=(v,n=120)=>String(v||'').trim().slice(0,n);
 const requireAuth=(req)=>{if(!req.auth)throw new HttpsError('unauthenticated','Silakan login.');return req.auth.uid;};
-async function actor(req){const uid=requireAuth(req);const s=await db.doc(`users/${uid}`).get();if(!s.exists||s.data().status!=='active')throw new HttpsError('permission-denied','Akun belum aktif.');return {uid,...s.data()};}
+async function actor(req){const uid=requireAuth(req);const s=await db.doc(`users/${uid}`).get();if(!s.exists||s.data().status!=='active')throw new HttpsError('permission-denied','Akun belum aktif.');const authUser=await admin.auth().getUser(uid);if(authUser.disabled||!authUser.emailVerified)throw new HttpsError('permission-denied','Akun Firebase tidak aktif atau email belum terverifikasi.');return {uid,...s.data()};}
 function canManage(a,u){return a.role==='super_admin'||(a.role==='org_admin'&&a.orgId===u.orgId);}
 exports.registerProfile=onCall({region,enforceAppCheck:false},async req=>{
  const uid=requireAuth(req),name=clean(req.data?.name,80),orgId=clean(req.data?.orgId,100);
@@ -34,5 +34,5 @@ exports.createOrganization=onCall({region},async req=>{
 });
 exports.assignOrgAdmin=onCall({region},async req=>{
  const a=await actor(req);if(a.role!=='super_admin')throw new HttpsError('permission-denied','Khusus Super Admin.');
- const uid=clean(req.data?.uid,128);const ref=db.doc(`users/${uid}`);await db.runTransaction(async tx=>{const s=await tx.get(ref);if(!s.exists||s.data().status!=='active')throw new HttpsError('failed-precondition','Pengguna harus aktif.');tx.update(ref,{role:'org_admin'});});return {ok:true};
+ const uid=clean(req.data?.uid,128);if(!uid||uid===a.uid)throw new HttpsError('invalid-argument','UID tidak valid.');const ref=db.doc(`users/${uid}`);await db.runTransaction(async tx=>{const s=await tx.get(ref);if(!s.exists||s.data().status!=='active'||s.data().role!=='member'||!s.data().orgId)throw new HttpsError('failed-precondition','Pengguna harus anggota aktif pada suatu instansi.');tx.update(ref,{role:'org_admin'});});return {ok:true};
 });
