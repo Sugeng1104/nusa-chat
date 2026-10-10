@@ -6,6 +6,23 @@ const app=initializeApp(firebaseConfig),auth=getAuth(app),db=getFirestore(app);
 const $=id=>document.getElementById(id),message=(t)=>{const el=$('message');if(el)el.textContent=t;};
 const escape=s=>String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const base=location.pathname.split('/').slice(0,-1).join('/')+'/';const go=file=>location.href=base+file;
+const verifyButton=$('sendVerification');
+function showVerification(show){if(verifyButton)verifyButton.hidden=!show;}
+async function resendVerification(){
+ const u=auth.currentUser;
+ if(!u){message('Masukkan email dan password, lalu klik Masuk terlebih dahulu.');return;}
+ try{
+  verifyButton.disabled=true;
+  await reload(u);
+  if(u.emailVerified){showVerification(false);message('Email sudah diverifikasi. Klik Periksa status akun.');return;}
+  await sendEmailVerification(u);
+  message('Email verifikasi berhasil dikirim. Periksa Kotak Masuk dan Spam, lalu klik tautannya.');
+ }catch(err){
+  if(err.code==='auth/too-many-requests')message('Terlalu banyak permintaan. Tunggu sebelum mengirim ulang.');
+  else message('Gagal mengirim email verifikasi: '+err.message);
+ }finally{verifyButton.disabled=false;}
+}
+verifyButton?.addEventListener('click',resendVerification);
 async function loadOrgs(){const sel=$('org');if(!sel)return;try{const snap=await getDocs(collection(db,'organizations'));sel.innerHTML='<option value="">Pilih instansi</option>'+snap.docs.filter(d=>d.data().active).map(d=>`<option value="${escape(d.id)}">${escape(d.data().name)}</option>`).join('');}catch(e){message('Tidak dapat memuat instansi: '+e.message);}}
 // Draf pendaftaran hanya menyimpan nama dan ID instansi, bukan password.
 const draftKey=uid=>`nusa-registration-${uid}`;
@@ -25,14 +42,15 @@ $('registerForm')?.addEventListener('submit',async e=>{
  }catch(err){message(err.message);}
 });
 $('loginForm')?.addEventListener('submit',async e=>{
- e.preventDefault();message('Memeriksa akun...');
+ e.preventDefault();showVerification(false);message('Memeriksa akun...');
  try{await signInWithEmailAndPassword(auth,$('email').value.trim(),$('password').value);await route();}
  catch(err){message(err.message);}
 });
 async function route(){
  const u=auth.currentUser;if(!u)return;
  await reload(u); // Ambil status verifikasi email terbaru dari Firebase.
- if(!u.emailVerified){message('Verifikasi email Anda dahulu melalui tautan yang dikirim Firebase.');return;}
+ if(!u.emailVerified){showVerification(true);message('Email belum diverifikasi. Klik Kirim Email Verifikasi, lalu buka email Anda.');return;}
+ showVerification(false);
  let snap=await getDoc(doc(db,'users',u.uid));
  if(!snap.exists()){
   const draft=readDraft(u.uid);
@@ -48,6 +66,7 @@ async function route(){
  go(['super_admin','org_admin'].includes(profile.role)?'admin.html':'chat.html');
 }
 $('loginCheck')?.addEventListener('click',()=>route().catch(e=>message(e.message)));
+if($('loginForm'))onAuthStateChanged(auth,u=>{if(u&&!u.emailVerified)showVerification(true);});
 $('logout')?.addEventListener('click',async()=>{await signOut(auth);go('login.html');});
 async function loadAdmin(){const u=auth.currentUser;if(!u)return;const s=await getDoc(doc(db,'users',u.uid));if(!s.exists||s.data().status!=='active'||!['super_admin','org_admin'].includes(s.data().role)){go('login.html');return;}currentAdmin={uid:u.uid,...s.data()};$('welcome').textContent='Halo, '+s.data().name+' ('+s.data().role+')';await refreshPending();if(s.data().role==='super_admin')$('superPanel').hidden=false;}
 let currentAdmin=null;
