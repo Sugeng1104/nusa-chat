@@ -1,6 +1,6 @@
 import {initializeApp} from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
 import {getAuth,onAuthStateChanged,signOut,reload} from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
-import {getFirestore,doc,getDoc,collection,query,where,getDocs,onSnapshot,orderBy,limit,serverTimestamp,setDoc,addDoc,updateDoc,arrayUnion} from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js';
+import {getFirestore,doc,getDoc,collection,query,where,getDocs,onSnapshot,orderBy,limit,serverTimestamp,setDoc,addDoc,updateDoc} from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js';
 import {firebaseConfig} from './firebase-config.js';
 const app=initializeApp(firebaseConfig),auth=getAuth(app),db=getFirestore(app);
 const $=id=>document.getElementById(id);
@@ -155,18 +155,27 @@ $('addMemberForm').addEventListener('submit',async e=>{
  if(ids.length>1){status('Untuk pengujian ini, pilih 1 anggota baru saja.');return;}
  const btn=$('submitAddMember');btn.disabled=true;
  const groupId=peer.id;
+ let stage='membaca data grup';
  try{
   const ref=doc(db,'groups',groupId);
   const latest=await getDoc(ref);
-  if(!latest.exists()||!latest.data().members?.includes(self.uid))throw Error('Anda bukan anggota grup ini.');
-  const approved=ids.filter(id=>contacts.some(u=>u.uid===id)&&!latest.data().members.includes(id));
+  if(!latest.exists())throw Error('Dokumen grup tidak ditemukan.');
+  const oldMembers=latest.data().members;
+  if(!Array.isArray(oldMembers)||!oldMembers.includes(self.uid))throw Error('Akun ini bukan anggota grup.');
+  const approved=ids.filter(id=>contacts.some(u=>u.uid===id)&&!oldMembers.includes(id));
   if(!approved.length)throw Error('Semua pengguna terpilih sudah menjadi anggota.');
-  if(latest.data().members.length+approved.length>20)throw Error('Grup maksimal 20 anggota.');
-  await updateDoc(ref,{members:arrayUnion(...approved)});
-  if(peer?.kind==='group'&&peer.id===groupId)peer.members=[...new Set([...(peer.members||[]),...approved])];
-  $('addMemberDialog').close();status(approved.length+' anggota berhasil ditambahkan ke grup.');
- }catch(err){status('Gagal menambah anggota ('+(err.code||'unknown')+'): '+err.message+' Pastikan Rules V3 sudah dipublikasikan.');}
- finally{btn.disabled=false;}
+  if(oldMembers.length+approved.length>20)throw Error('Grup maksimal 20 anggota.');
+  // Kirim array utuh dengan satu UID di akhir agar sesuai Rules V3.
+  const nextMembers=[...oldMembers,approved[0]];
+  stage='menyimpan anggota baru (updateDoc)';
+  console.info('[NUSA CHAT] Tambah anggota:',{groupId,uid:self.uid,oldCount:oldMembers.length,newCount:nextMembers.length,stage});
+  await updateDoc(ref,{members:nextMembers});
+  if(peer?.kind==='group'&&peer.id===groupId)peer.members=nextMembers;
+  $('addMemberDialog').close();status('1 anggota berhasil ditambahkan ke grup.');
+ }catch(err){
+  console.error('[NUSA CHAT] Gagal pada tahap:',stage,err);
+  status('Gagal pada tahap '+stage+' ('+(err.code||'unknown')+'): '+err.message);
+ }finally{btn.disabled=false;}
 });
 
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&peer){const key=peer.kind==='group'?'g:'+peer.id:'p:'+conversationId(self.uid,peer.uid);markSeen(key);}});
