@@ -47,7 +47,7 @@ $('loginForm')?.addEventListener('submit',async e=>{
  catch(err){message(err.message);}
 });
 async function route(){
- const u=auth.currentUser;if(!u)return;
+ const u=auth.currentUser;if(!u){message('Silakan masukkan email dan password lalu klik Masuk terlebih dahulu.');return;}
  await reload(u); // Ambil status verifikasi email terbaru dari Firebase.
  if(!u.emailVerified){showVerification(true);message('Email belum diverifikasi. Klik Kirim Email Verifikasi, lalu buka email Anda.');return;}
  showVerification(false);
@@ -65,8 +65,8 @@ async function route(){
  if(profile.status!=='active'){message('Akun tidak aktif: '+profile.status);return;}
  go(['super_admin','org_admin'].includes(profile.role)?'admin.html':'chat.html');
 }
-$('loginCheck')?.addEventListener('click',()=>route().catch(e=>message(e.message)));
-if($('loginForm'))onAuthStateChanged(auth,u=>{if(u&&!u.emailVerified)showVerification(true);});
+$('loginCheck')?.addEventListener('click',async()=>{message('Memperbarui status akun dari Firebase...');try{await route();}catch(e){message('Gagal memeriksa status: '+e.message);}});
+if($('loginForm'))onAuthStateChanged(auth,u=>{showVerification(Boolean(u&&!u.emailVerified));});
 $('logout')?.addEventListener('click',async()=>{await signOut(auth);go('login.html');});
 async function loadAdmin(){const u=auth.currentUser;if(!u)return;const s=await getDoc(doc(db,'users',u.uid));if(!s.exists||s.data().status!=='active'||!['super_admin','org_admin'].includes(s.data().role)){go('login.html');return;}currentAdmin={uid:u.uid,...s.data()};$('welcome').textContent='Halo, '+s.data().name+' ('+s.data().role+')';await refreshPending();if(s.data().role==='super_admin')$('superPanel').hidden=false;}
 let currentAdmin=null;
