@@ -1,5 +1,5 @@
 import {initializeApp} from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
-import {getAuth,createUserWithEmailAndPassword,signInWithEmailAndPassword,sendEmailVerification,signOut,onAuthStateChanged} from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
+import {getAuth,createUserWithEmailAndPassword,signInWithEmailAndPassword,sendEmailVerification,signOut,onAuthStateChanged,reload} from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
 import {getFirestore,doc,getDoc,collection,getDocs} from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js';
 import {getFunctions,httpsCallable} from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-functions.js';
 import {firebaseConfig} from './firebase-config.js';
@@ -9,9 +9,47 @@ const call=(name,data)=>httpsCallable(fn,name)(data);
 const escape=s=>String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const base=location.pathname.split('/').slice(0,-1).join('/')+'/';const go=file=>location.href=base+file;
 async function loadOrgs(){const sel=$('org');if(!sel)return;try{const snap=await getDocs(collection(db,'organizations'));sel.innerHTML='<option value="">Pilih instansi</option>'+snap.docs.filter(d=>d.data().active).map(d=>`<option value="${escape(d.id)}">${escape(d.data().name)}</option>`).join('');}catch(e){message('Tidak dapat memuat instansi: '+e.message);}}
-$('registerForm')?.addEventListener('submit',async e=>{e.preventDefault();message('Mendaftarkan akun...');const name=$('name').value.trim(),email=$('email').value.trim(),password=$('password').value,orgId=$('org').value;try{if(!orgId)throw Error('Pilih instansi.');const c=await createUserWithEmailAndPassword(auth,email,password);await sendEmailVerification(c.user);sessionStorage.setItem('nusaPendingName',name);sessionStorage.setItem('nusaPendingOrg',orgId);message('Email verifikasi dikirim. Verifikasi email, lalu login untuk melengkapi pendaftaran.');}catch(err){message(err.message);}});
-$('loginForm')?.addEventListener('submit',async e=>{e.preventDefault();message('Memeriksa akun...');try{await signInWithEmailAndPassword(auth,$('email').value.trim(),$('password').value);await route();}catch(err){message(err.message);}});
-async function route(){const u=auth.currentUser;if(!u)return;if(!u.emailVerified){message('Verifikasi email Anda dahulu, lalu login kembali.');return;}let snap=await getDoc(doc(db,'users',u.uid));if(!snap.exists){const name=sessionStorage.getItem('nusaPendingName'),orgId=sessionStorage.getItem('nusaPendingOrg');if(name&&orgId){await call('registerProfile',{name,orgId});sessionStorage.removeItem('nusaPendingName');sessionStorage.removeItem('nusaPendingOrg');snap=await getDoc(doc(db,'users',u.uid));}else{message('Profil belum dibuat. Jika registrasi dilakukan di perangkat lain, hubungi admin.');return;}}if(snap.data().status==='pending'){message('Akun Anda menunggu persetujuan admin.');return;}if(snap.data().status!=='active'){message('Akun tidak aktif: '+snap.data().status);return;}go(snap.data().role==='super_admin'||snap.data().role==='org_admin'?'admin.html':'chat.html');}
+// Draf pendaftaran hanya menyimpan nama dan ID instansi, bukan password.
+const draftKey=uid=>`nusa-registration-${uid}`;
+function saveDraft(uid,name,orgId){localStorage.setItem(draftKey(uid),JSON.stringify({name,orgId}));}
+function readDraft(uid){try{return JSON.parse(localStorage.getItem(draftKey(uid))||'null');}catch{return null;}}
+$('registerForm')?.addEventListener('submit',async e=>{
+ e.preventDefault();message('Mendaftarkan akun...');
+ const name=$('name').value.trim(),email=$('email').value.trim(),password=$('password').value,orgId=$('org').value;
+ try{
+  if(name.length<2)throw Error('Nama minimal 2 karakter.');
+  if(!orgId)throw Error('Pilih instansi.');
+  const c=await createUserWithEmailAndPassword(auth,email,password);
+  saveDraft(c.user.uid,name,orgId);
+  try{await sendEmailVerification(c.user);message('Email verifikasi dikirim. Buka tautan pada email, lalu masuk dengan akun Anda.');}
+  catch(err){message('Akun dibuat, tetapi email verifikasi gagal dikirim: '+err.message);}
+  await signOut(auth);
+ }catch(err){message(err.message);}
+});
+$('loginForm')?.addEventListener('submit',async e=>{
+ e.preventDefault();message('Memeriksa akun...');
+ try{await signInWithEmailAndPassword(auth,$('email').value.trim(),$('password').value);await route();}
+ catch(err){message(err.message);}
+});
+async function route(){
+ const u=auth.currentUser;if(!u)return;
+ await reload(u); // Ambil status verifikasi email terbaru dari Firebase.
+ if(!u.emailVerified){message('Verifikasi email Anda dahulu melalui tautan yang dikirim Firebase.');return;}
+ let snap=await getDoc(doc(db,'users',u.uid));
+ if(!snap.exists()){
+  const draft=readDraft(u.uid);
+  if(!draft?.name||!draft?.orgId){message('Profil belum dibuat dan data registrasi tidak ditemukan pada browser ini. Hubungi administrator untuk pemulihan akun.');return;}
+  try{await call('registerProfile',{name:draft.name,orgId:draft.orgId});}
+  catch(err){if(err.code!=='functions/already-exists')throw err;}
+  snap=await getDoc(doc(db,'users',u.uid));
+  if(!snap.exists())throw Error('Profil belum tersedia. Silakan coba periksa status lagi.');
+ }
+ localStorage.removeItem(draftKey(u.uid));
+ const profile=snap.data();
+ if(profile.status==='pending'){message('Akun Anda menunggu persetujuan admin.');return;}
+ if(profile.status!=='active'){message('Akun tidak aktif: '+profile.status);return;}
+ go(['super_admin','org_admin'].includes(profile.role)?'admin.html':'chat.html');
+}
 $('loginCheck')?.addEventListener('click',()=>route().catch(e=>message(e.message)));
 $('logout')?.addEventListener('click',async()=>{await signOut(auth);go('login.html');});
 async function loadAdmin(){const u=auth.currentUser;if(!u)return;const s=await getDoc(doc(db,'users',u.uid));if(!s.exists||s.data().status!=='active'||!['super_admin','org_admin'].includes(s.data().role)){go('login.html');return;}$('welcome').textContent='Halo, '+s.data().name+' ('+s.data().role+')';await refreshPending();if(s.data().role==='super_admin')$('superPanel').hidden=false;}
