@@ -111,8 +111,8 @@ async function refreshDashboard(){
   $('orgList').textContent='Gagal memuat instansi: '+(orgsResult.reason?.code||orgsResult.reason?.message||'kesalahan tidak diketahui')+'. Periksa Firestore Rules.';
   problems.push('Daftar instansi: '+(orgsResult.reason?.code||orgsResult.reason?.message||'gagal dibaca'));
  }
- if(usersResult.status==='fulfilled')drawPending();
- else $('pending').textContent='Gagal memuat permohonan: '+(usersResult.reason?.code||usersResult.reason?.message||'kesalahan tidak diketahui')+'.';
+ if(usersResult.status==='fulfilled'){drawPending();drawUserTable();}
+ else {$('userTableBody').innerHTML='<tr><td colspan="7">Gagal memuat data pengguna.</td></tr>'; $('pending').textContent='Gagal memuat permohonan: '+(usersResult.reason?.code||usersResult.reason?.message||'kesalahan tidak diketahui')+'.';}
  if(problems.length)showAdminMsg(problems.join(' | '));else showAdminMsg('Data dashboard berhasil diperbarui.');
 }
 function drawPending(){
@@ -135,6 +135,40 @@ function drawPending(){
   row.append(desc,actions);el.append(row);
  }
 }
+let selectedDeleteUser=null;
+const statusNames={active:'Aktif',pending:'Menunggu',rejected:'Ditolak',deleted:'Dihapus / nonaktif'};
+function orgName(orgId){return orgCache.find(o=>o.id===orgId)?.name||orgId||'—';}
+function drawUserTable(){
+ const tbody=$('userTableBody');if(!tbody)return;tbody.replaceChildren();
+ const term=($('userSearch')?.value||'').trim().toLowerCase(),filter=$('userStatusFilter')?.value||'';
+ const visible=userCache.filter(u=>(!filter||u.status===filter)&&[u.name,u.email,u.orgId,orgName(u.orgId),u.role].join(' ').toLowerCase().includes(term)).sort((a,b)=>(a.name||'').localeCompare(b.name||'','id'));
+ $('userTableCount').textContent=visible.length+' akun ditampilkan';
+ if(!visible.length){const tr=document.createElement('tr'),td=document.createElement('td');td.colSpan=7;td.textContent='Tidak ada akun yang sesuai.';tr.append(td);tbody.append(tr);return;}
+ visible.forEach((u,i)=>{
+  const tr=document.createElement('tr');
+  for(const val of [String(i+1),u.name||'—',u.email||'—',orgName(u.orgId),u.role||'—']){const td=document.createElement('td');td.textContent=val;tr.append(td);}
+  const statusTd=document.createElement('td'),span=document.createElement('span');span.className='nc-status '+(u.status||'');span.textContent=statusNames[u.status]||u.status||'—';statusTd.append(span);tr.append(statusTd);
+  const actionTd=document.createElement('td'),btn=document.createElement('button');btn.type='button';btn.textContent='Hapus Akun';
+  const allowed=currentAdmin?.role==='super_admin'&&u.uid!==currentAdmin.uid&&u.role!=='super_admin'&&u.status!=='deleted';
+  btn.disabled=!allowed;btn.title=allowed?'Nonaktifkan akses akun ini':'Hanya Super Admin dapat menghapus akun lain (kecuali Super Admin)';
+  btn.addEventListener('click',()=>{selectedDeleteUser=u;$('deleteUserDescription').textContent='Nonaktifkan akses NUSA CHAT untuk '+(u.name||u.email)+' ('+(u.email||'')+')?';$('deleteUserDialog').showModal();});
+  actionTd.append(btn);tr.append(actionTd);tbody.append(tr);
+ });
+}
+$('userSearch')?.addEventListener('input',drawUserTable);
+$('userStatusFilter')?.addEventListener('change',drawUserTable);
+$('cancelDeleteUser')?.addEventListener('click',()=>$('deleteUserDialog').close());
+$('confirmDeleteUser')?.addEventListener('click',async e=>{
+ const u=selectedDeleteUser;if(!u)return;
+ if(currentAdmin?.role!=='super_admin'||u.uid===currentAdmin.uid||u.role==='super_admin'){showAdminMsg('Akun Super Admin tidak dapat dihapus.');return;}
+ const btn=e.currentTarget;btn.disabled=true;
+ try{
+  const ref=doc(db,'users',u.uid),latest=await getDoc(ref);
+  if(!latest.exists()||latest.data().role==='super_admin'||latest.data().status==='deleted')throw Error('Akun tidak tersedia atau tidak boleh dihapus.');
+  await updateDoc(ref,{status:'deleted',deletedBy:auth.currentUser.uid,deletedAt:serverTimestamp()});
+  $('deleteUserDialog').close();selectedDeleteUser=null;await refreshDashboard();showAdminMsg('Akses akun berhasil dinonaktifkan. Data Authentication dan chat tidak dihapus.');
+ }catch(err){showAdminMsg('Gagal menonaktifkan akun: '+(err.code||err.message));}finally{btn.disabled=false;}
+});
 function drawOrgs(){
  const el=$('orgList');if(!el)return;el.replaceChildren();
  for(const o of orgCache.filter(o=>currentAdmin.role==='super_admin'||o.id===currentAdmin.orgId)){
