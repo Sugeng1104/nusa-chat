@@ -154,12 +154,19 @@ async function driveRequest(request){
  if(!result||!result.ok)throw Error(result?.error||'Operasi Google Drive gagal.');return result.file;
 }
 function clearAttachment(){selectedFile=null;$('attachmentFile').value='';$('attachmentPreview').hidden=true;$('attachmentPreview').replaceChildren();}
-$('attachToggle').addEventListener('click',()=>{if(peer&&self)$('attachmentFile').click();});
+// Label HTML native membuka file picker tanpa bergantung pada eksekusi JavaScript.
+$('attachToggle').addEventListener('click',()=>{
+ if(!self){status('Akun belum siap. Tunggu hingga login selesai.');}
+ else if(!peer){status('Pilih kontak atau grup sebelum mengirim lampiran.');}
+});
+$('attachToggle').addEventListener('keydown',e=>{
+ if(e.key==='Enter'||e.key===' '){e.preventDefault();$('attachmentFile').click();}
+});
 $('attachmentFile').addEventListener('change',()=>{
- const file=$('attachmentFile').files?.[0];if(!file){clearAttachment();return;}
+ const file=$('attachmentFile').files?.[0];if(!file){return;}
  const ext=file.name.split('.').pop().toLowerCase();
  if(!DRIVE_EXT.has(ext)||file.size>DRIVE_MAX||file.size===0){status('Format tidak didukung atau file melebihi 10 MB.');clearAttachment();return;}
- selectedFile=file;const preview=$('attachmentPreview');preview.replaceChildren();preview.hidden=false;
+ selectedFile=file;status('Lampiran dipilih: '+file.name+'. Tekan Kirim untuk mengunggah.');const preview=$('attachmentPreview');preview.replaceChildren();preview.hidden=false;
  const name=document.createElement('span');name.textContent='📎 '+file.name+' ('+(file.size/1024/1024).toFixed(2)+' MB)';
  const remove=document.createElement('button');remove.type='button';remove.textContent='✕';remove.title='Batalkan lampiran';remove.addEventListener('click',clearAttachment);preview.append(name,remove);
 });
