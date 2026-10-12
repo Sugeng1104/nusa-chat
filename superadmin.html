@@ -1,0 +1,25 @@
+<!doctype html><html lang="id"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Super Admin | PASURA Chat</title><style>
+:root{font-family:system-ui,Arial,sans-serif;color:#163c31;background:#f2f8f4}*{box-sizing:border-box}
+body{margin:0}header{background:linear-gradient(120deg,#064f39,#16916b);color:white;padding:16px max(20px,calc((100vw - 1180px)/2));display:flex;justify-content:space-between;align-items:center;gap:15px}
+header a{color:white;text-decoration:none;font-weight:750}main{max-width:1180px;margin:26px auto;padding:0 16px}
+h1{margin:0 0 5px}p{line-height:1.5}.muted{color:#5a756c}.cards{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+.card{background:white;border:1px solid #d5e5db;border-radius:16px;padding:20px;margin:16px 0;box-shadow:0 5px 16px #163c3110}
+.stat strong{font-size:30px;display:block;color:#086044}.toolbar{display:flex;flex-wrap:wrap;gap:9px;margin:12px 0}
+input,select,button{font:inherit;padding:10px 12px;border-radius:9px;border:1px solid #a8c5b5}input{max-width:100%}
+button{background:#087a56;color:white;border:0;cursor:pointer}button.secondary{background:#dceee5;color:#14553d}button.danger{background:#ad3345}button:disabled{opacity:.5;cursor:not-allowed}
+.tablewrap{overflow-x:auto}table{border-collapse:collapse;width:100%;min-width:790px}th,td{border:1px solid #24392f;padding:10px;text-align:left}th{background:#dceec8}tr:nth-child(even){background:#f5f9f4}td button{margin:2px}
+#message{min-height:24px;font-weight:650}dialog{border:0;border-radius:15px;padding:24px;width:min(450px,92vw)}dialog::backdrop{background:#0009}
+label{display:block;margin:10px 0 5px;font-weight:650}.notice{background:#fff9e9;border-left:4px solid #d39c30;padding:12px}
+@media(max-width:650px){.cards{grid-template-columns:1fr}header{padding:14px}h1{font-size:24px}}
+</style></head>
+<body><header><a href="admin.html">← PASURA Chat · Super Admin</a><button id="logout" class="secondary">Keluar</button></header>
+<main><h1>Panel Super Admin</h1><p class="muted" id="welcome">Memeriksa kewenangan...</p><p id="message" role="status" aria-live="polite"></p>
+<div class="cards"><div class="card stat">Total akun<strong id="total">—</strong></div><div class="card stat">Aktif<strong id="active">—</strong></div><div class="card stat">Menunggu<strong id="pending">—</strong></div></div>
+<section class="card"><h2>Manajemen akun ASN</h2><div class="toolbar"><input id="search" placeholder="Cari nama, email, instansi" aria-label="Cari pengguna"><select id="filter"><option value="">Semua status</option><option value="active">Aktif</option><option value="pending">Menunggu</option><option value="rejected">Ditolak</option><option value="deleted">Nonaktif</option></select><button id="refresh">Segarkan</button></div>
+<div class="tablewrap"><table><thead><tr><th>Nama</th><th>Email</th><th>Instansi</th><th>Peran</th><th>Status</th><th>Tindakan</th></tr></thead><tbody id="users"><tr><td colspan="6">Memuat...</td></tr></tbody></table></div></section>
+<section class="card"><h2>Tambah akun</h2><p>Pendaftaran akun baru tetap melalui <a href="register.html">halaman registrasi PASURA Chat</a>, menggunakan kode instansi dan verifikasi email. Super Admin dapat menyetujui akun baru pada tabel di atas.</p><p class="notice">Membuat akun Firebase Authentication orang lain langsung dari browser admin akan mengubah sesi login admin. Untuk pembuatan akun massal diperlukan backend tepercaya dengan Firebase Admin SDK.</p></section>
+<section class="card"><h2>Pengelolaan percakapan</h2><p>Super Admin dapat mengelola akun dan organisasi, tetapi pesan pribadi dan grup tetap hanya dapat dibaca oleh pesertanya sesuai Firestore Rules. Panel ini tidak membuka pesan pengguna lain secara diam-diam.</p><p>Untuk penanganan penyalahgunaan, gunakan mekanisme <b>laporkan pesan</b> yang mengirim salinan pesan terpilih atas tindakan pengguna, disertai log audit. Fitur laporan tersebut dapat dikembangkan pada tahap berikutnya.</p></section>
+</main>
+<dialog id="renameDialog"><form id="renameForm"><h2>Ubah nama akun</h2><p id="renameWho"></p><label for="newName">Nama baru</label><input id="newName" required minlength="2" maxlength="100" style="width:100%"><div class="toolbar"><button type="button" class="secondary" id="cancelRename">Batal</button><button type="submit">Simpan nama</button></div></form></dialog>
+<script type="module" src="js/superadmin.js?v=1"></script></body></html>
