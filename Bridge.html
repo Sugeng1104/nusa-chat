@@ -1,12 +1,31 @@
-<!doctype html><html><head><meta charset="utf-8"></head><body><script>
+<!doctype html><html><head><meta charset="utf-8"><title>PASURA Drive</title></head><body style="font:15px system-ui;padding:20px"><h3>Penghubung Google Drive PASURA Chat</h3><p id="state">Menghubungkan ke PASURA Chat…</p><script>
 'use strict';
-const allowed='https://sugeng1104.github.io';
-window.addEventListener('message',event=>{
-  if(event.origin!==allowed || !event.data || event.data.pasuraDrive!==true)return;
+const NONCE=<?!= JSON.stringify(nonce) ?>;
+const APP_ORIGIN='https://sugeng1104.github.io';
+const state=document.getElementById('state');
+// Google HTML Service may run in a sandboxed inner iframe.
+// Try opener directly and, if available, the opener of the outer frame.
+let target=null;
+try{target=window.opener || window.parent.opener;}catch(e){}
+if(!target){state.textContent='Jendela penghubung tidak dapat mengakses PASURA Chat. Periksa pengaturan pop-up browser.';}
+else{
+ const announce=()=>{try{target.postMessage({pasuraDrive:true,type:'ready',nonce:NONCE},APP_ORIGIN);}catch(e){state.textContent='Gagal mengirim konfirmasi: '+e.message;}};
+ announce();
+ const interval=setInterval(announce,900);
+ window.addEventListener('message',event=>{
+  if(event.origin!==APP_ORIGIN||!event.data||event.data.pasuraDrive!==true||event.data.type!=='request'||event.data.nonce!==NONCE)return;
+  clearInterval(interval);
   const {id,request}=event.data;
   if(typeof id!=='string'||id.length>100||!request||typeof request!=='object')return;
-  google.script.run.withSuccessHandler(result=>event.source.postMessage({pasuraDrive:true,id,result},event.origin))
-   .withFailureHandler(err=>event.source.postMessage({pasuraDrive:true,id,result:{ok:false,error:String(err.message||err)}},event.origin))
-   .bridgeRequest(request,event.origin);
-});
+  state.textContent='Memproses lampiran. Mohon tunggu…';
+  google.script.run.withSuccessHandler(result=>{
+    state.textContent=result?.ok?'Proses selesai. Jendela akan ditutup.':'Proses gagal: '+(result?.error||'Kesalahan tidak diketahui');
+    event.source.postMessage({pasuraDrive:true,type:'result',nonce:NONCE,id,result},event.origin);
+  }).withFailureHandler(err=>{
+    const result={ok:false,error:String(err?.message||err)};
+    state.textContent='Proses gagal: '+result.error;
+    event.source.postMessage({pasuraDrive:true,type:'result',nonce:NONCE,id,result},event.origin);
+  }).bridgeRequest(request,event.origin);
+ });
+}
 </script></body></html>
