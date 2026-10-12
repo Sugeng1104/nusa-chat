@@ -1,0 +1,12 @@
+import {initializeApp,getApps,getApp} from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
+import {getAuth,onAuthStateChanged} from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
+import {getFirestore,doc,getDoc,collection,addDoc,serverTimestamp} from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js';
+import {firebaseConfig} from './firebase-config.js';
+const app=getApps().length?getApp():initializeApp(firebaseConfig),auth=getAuth(app),db=getFirestore(app),$=id=>document.getElementById(id);let user=null;
+onAuthStateChanged(auth,async u=>{if(!u){location.replace('login.html');return;}try{const s=await getDoc(doc(db,'users',u.uid));if(!u.emailVerified||!s.exists()||s.data().status!=='active'){$('reportForm').hidden=true;$('message').textContent='Akun harus aktif dan terverifikasi.';return;}user=u;}catch(e){$('message').textContent=e.message;}});
+$('reportForm').onsubmit=async e=>{e.preventDefault();if(!user)return;const b=e.submitter;b.disabled=true;
+try{const caseId=$('caseId').value.trim(),sourceType=$('sourceType').value,sourceId=$('sourceId').value.trim(),text=$('content').value.trim();
+if(!caseId||!sourceId||!text||!$('consent').checked)throw Error('Lengkapi data dan persetujuan.');
+await addDoc(collection(db,'auditCases',caseId,'evidence'),{submittedBy:user.uid,sourceType,sourceId,text,submittedAt:serverTimestamp(),consent:true,verification:'unverified_submission'});
+$('reportForm').reset();$('message').textContent='Bukti telah diserahkan. Petugas audit dapat memeriksanya.';
+}catch(err){$('message').textContent='Gagal menyerahkan bukti: '+(err.code||err.message);}finally{b.disabled=false;}};
