@@ -135,8 +135,10 @@ let selectedFile=null;
 function openDriveBridge(){
  const nonce=crypto.randomUUID();
  const url=DRIVE_API+'?bridge=1&nonce='+encodeURIComponent(nonce);
- const popup=window.open(url,'pasura_drive_'+nonce,'popup=yes,width=540,height=620');
- if(!popup)throw Error('Jendela Google Drive diblokir. Izinkan pop-up untuk situs PASURA Chat.');
+ const popup=window.open(url,'pasura_drive_'+nonce,'popup=yes,width=420,height=360');
+ if(!popup)throw Error('Jendela penghubung diblokir. Izinkan pop-up untuk situs PASURA Chat.');
+ // Upayakan fokus tetap pada ruang chat. Browser dapat mengabaikan permintaan ini.
+ try{popup.blur();window.focus();}catch(e){}
  return {popup,nonce};
 }
 function trustedBridgeOrigin(origin){
@@ -290,7 +292,7 @@ $('messageForm').addEventListener('submit',async e=>{
  try{if(file)bridge=openDriveBridge();}catch(err){status('Lampiran gagal: '+err.message);btn.disabled=false;$('attachToggle').disabled=false;return;}
  try{
   let attachment=null;
-  if(file){status('Mengunggah '+file.name+' ke Google Drive...');
+  if(file){status('Proses kirim...');
    const base64=await fileAsBase64(file);
    attachment=await driveRequest({action:'upload',kind,conversationId:conversationIdValue,fileName:file.name,mimeType:file.type||({'pdf':'application/pdf','docx':'application/vnd.openxmlformats-officedocument.wordprocessingml.document','xlsx':'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet','ppt':'application/vnd.ms-powerpoint','jpg':'image/jpeg','jpeg':'image/jpeg','png':'image/png','gif':'image/gif'}[file.name.split('.').pop().toLowerCase()]),base64},bridge);
   }
