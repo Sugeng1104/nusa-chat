@@ -7,15 +7,29 @@ const el=id=>document.getElementById(id);
 const voice=el('ncVoiceCall'),video=el('ncVideoCall'),dialog=el('ncCallDialog'),callStatus=el('ncCallStatus');
 let user=null,selected=null,current=null,pc=null,stream=null,callStop=null,candidateStop=null,incomingStop=null,remoteCandidates=[],startedAt=0,clock=null,ringTimeout=null,ending=false;
 const ICE={iceServers:[{urls:'stun:stun.l.google.com:19302'}]};
-// Nada dering Web Audio. Browser membutuhkan interaksi pengguna untuk mengaktifkan audio.
-let ringContext=null,ringLoop=null,ringMode=null;
-function unlockRinger(){try{const C=window.AudioContext||window.webkitAudioContext;if(!C)return;if(!ringContext)ringContext=new C();if(ringContext.state==='suspended')ringContext.resume().catch(()=>{});}catch(e){console.warn('Audio dering:',e);}}
-window.addEventListener('pointerdown',unlockRinger,{passive:true});
-window.addEventListener('keydown',unlockRinger);
-function ringTone(freq,start,duration,volume=.085){if(!ringContext||ringContext.state!=='running')return;const osc=ringContext.createOscillator(),gain=ringContext.createGain(),t=ringContext.currentTime+start;osc.type='sine';osc.frequency.value=freq;gain.gain.setValueAtTime(.0001,t);gain.gain.exponentialRampToValueAtTime(volume,t+.025);gain.gain.setValueAtTime(volume,t+Math.max(.03,duration-.05));gain.gain.exponentialRampToValueAtTime(.0001,t+duration);osc.connect(gain);gain.connect(ringContext.destination);osc.start(t);osc.stop(t+duration+.02);}
-function ringTick(){if(!ringMode)return;unlockRinger();if(ringMode==='incoming'){ringTone(740,0,.35);ringTone(880,.38,.35);ringTone(740,.8,.35);ringTone(880,1.18,.35);}else{ringTone(425,0,.4,.055);ringTone(425,.55,.4,.055);}}
-function startRinging(mode){stopRinging();ringMode=mode;ringTick();ringLoop=setInterval(ringTick,mode==='incoming'?2800:3200);}
-function stopRinging(){ringMode=null;if(ringLoop){clearInterval(ringLoop);ringLoop=null;}}
+// Ringtone WAV + aktivasi audio eksplisit untuk pembatasan autoplay browser HP.
+const ringtone=new Audio('sounds/nusa-ring.wav');ringtone.loop=true;ringtone.preload='auto';ringtone.volume=1;
+const ringback=new Audio('sounds/nusa-ringback.wav');ringback.loop=true;ringback.preload='auto';ringback.volume=.65;
+let ringMode=null,ringAllowed=false;
+const ringEnable=document.getElementById('ncEnableRing');
+function markRingReady(){ringAllowed=true;ringEnable.hidden=true;}
+async function unlockRinger(){
+  try{const a=ringtone;const wasMuted=a.muted;a.muted=true;await a.play();a.pause();a.currentTime=0;a.muted=wasMuted;markRingReady();}catch(e){console.info('Browser meminta interaksi untuk audio:',e.name);}
+}
+ringEnable.addEventListener('click',async()=>{
+  try{ringtone.muted=false;await ringtone.play();markRingReady();}
+  catch(e){ringEnable.hidden=false;ringEnable.textContent='🔔 Ketuk lagi untuk bunyikan dering';console.warn('Dering ditolak browser:',e);}
+});
+window.addEventListener('pointerdown',e=>{if(e.target!==ringEnable&&!ringAllowed)void unlockRinger();},{passive:true});
+window.addEventListener('keydown',()=>{if(!ringAllowed)void unlockRinger();});
+async function startRinging(mode){
+  stopRinging();ringMode=mode;
+  const audio=mode==='incoming'?ringtone:ringback;
+  audio.currentTime=0;
+  try{await audio.play();if(mode==='incoming')ringEnable.hidden=true;}
+  catch(e){console.warn('Dering tidak bisa autoplay:',e.name,e.message);if(mode==='incoming'){ringEnable.hidden=false;ringEnable.textContent='🔔 Ketuk untuk bunyikan dering';}}
+}
+function stopRinging(){ringMode=null;for(const a of [ringtone,ringback]){a.pause();a.currentTime=0;}ringEnable.hidden=true;}
 // Tombol Back pada HP menutup tampilan chat, bukan panggilan aktif.
 // Guard ini hanya berlaku selama panggilan; tidak mempertahankan panggilan jika browser ditutup.
 let callHistoryGuard=false;
@@ -39,11 +53,11 @@ pc.onconnectionstatechange=()=>{if(!pc)return;if(pc.connectionState==='connected
 const other=side==='caller'?'callee':'caller';candidateStop=onSnapshot(collection(db,'calls',id,other+'Candidates'),snap=>{for(const ch of snap.docChanges()){if(ch.type!=='added')continue;const c=ch.doc.data().candidate;if(!c)continue;if(pc?.remoteDescription)pc.addIceCandidate(new RTCIceCandidate(c)).catch(console.warn);else remoteCandidates.push(c);}},err=>console.warn('ICE listener',err));}
 async function flushCandidates(){for(const c of remoteCandidates.splice(0)){await pc.addIceCandidate(new RTCIceCandidate(c)).catch(console.warn);}}
 async function start(kind){if(current||!user||selected?.kind!=='private')return;const to={...selected};try{current={kind,side:'caller',peerName:to.name,peerUid:to.uid};buttons();showCall(to.name,kind,'outgoing');message('Meminta izin perangkat...');await prepareMedia(kind);if(!current)return;
-const ref=await addDoc(collection(db,'calls'),{callerId:user.uid,calleeId:to.uid,kind,status:'ringing',createdAt:serverTimestamp(),updatedAt:serverTimestamp()});current.id=ref.id;await setupPeer(ref.id,kind,'caller');const offer=await pc.createOffer();await pc.setLocalDescription(offer);await updateDoc(ref,{offer:{type:offer.type,sdp:offer.sdp},updatedAt:serverTimestamp()});message('Memanggil '+to.name+'...');startRinging('outgoing');
+const ref=await addDoc(collection(db,'calls'),{callerId:user.uid,calleeId:to.uid,kind,status:'ringing',createdAt:serverTimestamp(),updatedAt:serverTimestamp()});current.id=ref.id;await setupPeer(ref.id,kind,'caller');const offer=await pc.createOffer();await pc.setLocalDescription(offer);await updateDoc(ref,{offer:{type:offer.type,sdp:offer.sdp},updatedAt:serverTimestamp()});message('Memanggil '+to.name+'...');void startRinging('outgoing');
 callStop=onSnapshot(ref,async s=>{if(!current||current.id!==ref.id)return;const d=s.data();if(!d||d.status==='ended'||d.status==='rejected'||d.status==='missed'){message('Panggilan berakhir.');await finish(true);return;}if(d.answer&&!pc.remoteDescription){await pc.setRemoteDescription(new RTCSessionDescription(d.answer));await flushCandidates();}},e=>{message('Pemantauan panggilan gagal: '+e.message);void finish(true);});
 ringTimeout=setTimeout(()=>{if(current?.id===ref.id&&pc?.connectionState!=='connected'){void updateDoc(ref,{status:'missed',updatedAt:serverTimestamp()}).catch(()=>{});void finish(true);}},45000);
 }catch(err){message('Tidak dapat memulai panggilan: '+err.message);console.error(err);await finish(true);}}
-async function listenIncoming(){incomingStop?.();if(!user)return;incomingStop=onSnapshot(query(collection(db,'calls'),where('calleeId','==',user.uid)),async snap=>{if(current)return;const pending=snap.docs.filter(d=>d.data().status==='ringing'&&d.data().offer).sort((a,b)=>(b.data().createdAt?.seconds||0)-(a.data().createdAt?.seconds||0))[0];if(!pending)return;const d=pending.data();if(d.callerId===user.uid)return;const age=Date.now()-(d.createdAt?.toMillis?.()||Date.now());if(age>60000)return;current={id:pending.id,kind:d.kind,side:'callee',peerUid:d.callerId,peerName:'Pengguna NUSA CHAT'};buttons();try{const p=await getDoc(doc(db,'users',d.callerId));if(p.exists())current.peerName=p.data().name||current.peerName;}catch{}showCall(current.peerName,d.kind,'incoming');message('Panggilan masuk...');startRinging('incoming');callStop=onSnapshot(pending.ref,s=>{if(!s.exists()||['ended','rejected','missed'].includes(s.data().status))void finish(true);});},e=>console.warn('Panggilan masuk tidak dapat dipantau',e));}
+async function listenIncoming(){incomingStop?.();if(!user)return;incomingStop=onSnapshot(query(collection(db,'calls'),where('calleeId','==',user.uid)),async snap=>{if(current)return;const pending=snap.docs.filter(d=>d.data().status==='ringing'&&d.data().offer).sort((a,b)=>(b.data().createdAt?.seconds||0)-(a.data().createdAt?.seconds||0))[0];if(!pending)return;const d=pending.data();if(d.callerId===user.uid)return;const age=Date.now()-(d.createdAt?.toMillis?.()||Date.now());if(age>60000)return;current={id:pending.id,kind:d.kind,side:'callee',peerUid:d.callerId,peerName:'Pengguna NUSA CHAT'};buttons();try{const p=await getDoc(doc(db,'users',d.callerId));if(p.exists())current.peerName=p.data().name||current.peerName;}catch{}showCall(current.peerName,d.kind,'incoming');message('Panggilan masuk...');void startRinging('incoming');callStop=onSnapshot(pending.ref,s=>{if(!s.exists()||['ended','rejected','missed'].includes(s.data().status))void finish(true);});},e=>console.warn('Panggilan masuk tidak dapat dipantau',e));}
 async function accept(){if(!current||current.side!=='callee')return;stopRinging();const c={...current};try{message('Mengaktifkan mikrofon/kamera...');await prepareMedia(c.kind);if(current?.id!==c.id)return;await setupPeer(c.id,c.kind,'callee');const ref=doc(db,'calls',c.id),s=await getDoc(ref);if(!s.exists()||s.data().status!=='ringing'||!s.data().offer)throw Error('Panggilan tidak lagi tersedia.');await pc.setRemoteDescription(new RTCSessionDescription(s.data().offer));await flushCandidates();const answer=await pc.createAnswer();await pc.setLocalDescription(answer);await updateDoc(ref,{answer:{type:answer.type,sdp:answer.sdp},status:'accepted',updatedAt:serverTimestamp()});setMode(c.kind,'connected');message('Menghubungkan...');}catch(err){message('Gagal menerima panggilan: '+err.message);await finish(false);}}
 async function finish(localOnly=false,reject=false){if(ending)return;ending=true;const c=current;current=null;stopRinging();clearTimer();callStop?.();callStop=null;candidateStop?.();candidateStop=null;remoteCandidates=[];try{pc?.close();}catch{}pc=null;try{stream?.getTracks().forEach(t=>t.stop());}catch{}stream=null;el('ncLocalVideo').srcObject=null;el('ncRemoteVideo').srcObject=null;el('ncRemoteAudio').srcObject=null;if(dialog.open)dialog.close();buttons();if(c?.id&&!localOnly){try{await updateDoc(doc(db,'calls',c.id),{status:reject?'rejected':'ended',updatedAt:serverTimestamp()});}catch(e){console.warn('Tidak bisa menutup status panggilan',e);}}ending=false;}
 voice.addEventListener('click',()=>start('audio'));video.addEventListener('click',()=>start('video'));
