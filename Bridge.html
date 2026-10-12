@@ -1,0 +1,12 @@
+<!doctype html><html><head><meta charset="utf-8"></head><body><script>
+'use strict';
+const allowed='https://sugeng1104.github.io';
+window.addEventListener('message',event=>{
+  if(event.origin!==allowed || !event.data || event.data.pasuraDrive!==true)return;
+  const {id,request}=event.data;
+  if(typeof id!=='string'||id.length>100||!request||typeof request!=='object')return;
+  google.script.run.withSuccessHandler(result=>event.source.postMessage({pasuraDrive:true,id,result},event.origin))
+   .withFailureHandler(err=>event.source.postMessage({pasuraDrive:true,id,result:{ok:false,error:String(err.message||err)}},event.origin))
+   .bridgeRequest(request,event.origin);
+});
+</script></body></html>
