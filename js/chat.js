@@ -211,9 +211,43 @@ function pasuraWatchReviews(){if(pasuraReviewStop)pasuraReviewStop();pasuraRevie
 function pasuraRenderLinks(box,m,messageId){const urls=pasuraLinks(m.text);if(!urls.length)return;const wrap=document.createElement('div');wrap.style.cssText='margin-top:8px;display:flex;flex-direction:column;gap:6px';for(const url of urls){const row=document.createElement('div');const trusted=pasuraTrusted(url);const review=pasuraReviews.get(messageId);const approved=trusted||review?.reviewStatus==='approved';if(approved){const a=document.createElement('a');a.href=url;a.target='_blank';a.rel='noopener noreferrer';a.textContent='🔗 Buka tautan: '+url;a.style.overflowWrap='anywhere';row.append(a);}else{row.textContent=(review?.reviewStatus==='rejected'?'⛔ Link ditolak admin: ':'⏳ Menunggu persetujuan admin: ')+url;row.style.cssText='font-size:12px;overflow-wrap:anywhere;opacity:.85';}wrap.append(row);}box.append(wrap);}
 function showMessages(snap,key){window.pasuraLastMessageSnap=snap;const area=$('messages');area.replaceChildren();if(snap.empty){const p=document.createElement('p');p.className='chat-empty';p.textContent='Belum ada pesan. Mulai percakapan!';area.append(p);return;}for(const d of snap.docs){const m=d.data();const hs=historyFor(key);if(hs.ids.includes(d.id)||(m.createdAt?.toMillis?.()||0)<=hs.cutoff)continue;const box=document.createElement('div');box.className='bubble'+(m.senderId===self.uid?' mine':'');box.textContent=m.text;pasuraRenderLinks(box,m,d.id);renderDriveAttachment(box,m);box.dataset.messageId=d.id;box.tabIndex=0;box.title='Tekan dan tahan 1 detik untuk pilihan hapus';longPress(box,()=>openActions({type:'message',key,id:d.id}));const time=document.createElement('time');time.textContent=m.createdAt?.toDate?.().toLocaleString('id-ID',{dateStyle:'short',timeStyle:'short'})||'Mengirim...';box.append(time);area.append(box);}area.scrollTop=area.scrollHeight;}
 function conversationId(a,b){return [a,b].sort().join('_');}
-let pasuraChatReviewsStop=null;function startMessages(ref,key){if(pasuraChatReviewsStop){pasuraChatReviewsStop();pasuraChatReviewsStop=null;}pasuraChatReviewsStop=onSnapshot(query(collection(db,'linkReviews'),where('chatId','==',ref.id)),snap=>{for(const d of snap.docs)pasuraReviews.set(d.id,d.data());if(window.pasuraLastMessageSnap)showMessages(window.pasuraLastMessageSnap,key);},e=>console.warn('Review link:',e.message));stopMessages=onSnapshot(query(collection(ref,'messages'),orderBy('createdAt','desc'),limit(100)),s=>{showMessages({docs:[...s.docs].reverse(),empty:s.empty},key);if(document.visibilityState==='visible')markSeen(key);},e=>status('Gagal membaca pesan: '+e.message));}
-async function selectPeer(u){const keyForUnhide='p:'+conversationId(self.uid,u.uid);if(isHidden(keyForUnhide)){hiddenChats.delete(keyForUnhide);saveHidden();}openMobileChat();const token=++selectionToken;if(stopMessages){stopMessages();stopMessages=null;}peer={...u,kind:'private'};window.dispatchEvent(new CustomEvent('nusa:peer',{detail:{kind:'private',uid:u.uid,name:u.name}}));$('addGroupMember').hidden=true;clearAttachment();setEmojiOpen(false);emojiToggle.disabled=false;drawContacts();drawGroups();$('chatWith').textContent=u.name+' · '+schoolLabel(u);$('messageText').disabled=false;$('sendMessage').disabled=false;status('');const id=conversationId(self.uid,u.uid),key='p:'+id,ref=doc(db,'conversations',id);try{const existing=await getDoc(ref);if(!existing.exists())await setDoc(ref,{participants:[self.uid,u.uid].sort(),createdAt:serverTimestamp()});if(token!==selectionToken)return;markSeen(key);startMessages(ref,key);}catch(e){status('Tidak dapat membuka percakapan: '+e.message);}}
-async function selectGroup(g){const keyForUnhide='g:'+g.id;if(isHidden(keyForUnhide)){hiddenChats.delete(keyForUnhide);saveHidden();}openMobileChat();++selectionToken;if(stopMessages){stopMessages();stopMessages=null;}peer={...g,kind:'group'};window.dispatchEvent(new CustomEvent('nusa:peer',{detail:{kind:'group'}}));$('addGroupMember').hidden=false;clearAttachment();setEmojiOpen(false);emojiToggle.disabled=false;drawContacts();drawGroups();$('chatWith').textContent='👥 '+g.name;$('messageText').disabled=false;$('sendMessage').disabled=false;status('');const key='g:'+g.id;markSeen(key);startMessages(doc(db,'groups',g.id),key);}
+// V16: setiap pesan yang mengandung link dipantau melalui dokumen review-nya.
+// Query koleksi berdasarkan chatId dapat ditolak Firestore Rules karena cakupan query;
+// listener dokumen spesifik memastikan pengirim dan peserta percakapan melihat status yang sama.
+const pasuraMessageReviewStops=new Map();
+let pasuraCurrentReviewChat=null;
+function pasuraStopMessageReviews(){
+  for(const stop of pasuraMessageReviewStops.values())stop();
+  pasuraMessageReviewStops.clear();
+  pasuraCurrentReviewChat=null;
+}
+function pasuraTrackMessageReviews(snap,key){
+  const ids=new Set(snap.docs.filter(d=>pasuraLinks(d.data().text).some(url=>!pasuraTrusted(url))).map(d=>d.id));
+  for(const [id,stop] of pasuraMessageReviewStops){if(!ids.has(id)){stop();pasuraMessageReviewStops.delete(id);pasuraReviews.delete(id);}}
+  for(const id of ids){
+    if(pasuraMessageReviewStops.has(id))continue;
+    const stop=onSnapshot(doc(db,'linkReviews',id),reviewSnap=>{
+      if(pasuraCurrentReviewChat!==key)return;
+      if(reviewSnap.exists())pasuraReviews.set(id,reviewSnap.data());
+      else pasuraReviews.delete(id);
+      if(window.pasuraLastMessageSnap)showMessages(window.pasuraLastMessageSnap,key);
+    },err=>console.warn('Gagal membaca status persetujuan link '+id+':',err.message));
+    pasuraMessageReviewStops.set(id,stop);
+  }
+}
+function startMessages(ref,key){
+  pasuraStopMessageReviews();
+  pasuraCurrentReviewChat=key;
+  window.pasuraLastMessageSnap=null;
+  stopMessages=onSnapshot(query(collection(ref,'messages'),orderBy('createdAt','desc'),limit(100)),s=>{
+    const visible={docs:[...s.docs].reverse(),empty:s.empty};
+    showMessages(visible,key);
+    pasuraTrackMessageReviews(visible,key);
+    if(document.visibilityState==='visible')markSeen(key);
+  },e=>status('Gagal membaca pesan: '+e.message));
+}
+async function selectPeer(u){const keyForUnhide='p:'+conversationId(self.uid,u.uid);if(isHidden(keyForUnhide)){hiddenChats.delete(keyForUnhide);saveHidden();}openMobileChat();const token=++selectionToken;if(stopMessages){stopMessages();stopMessages=null;}pasuraStopMessageReviews();peer={...u,kind:'private'};window.dispatchEvent(new CustomEvent('nusa:peer',{detail:{kind:'private',uid:u.uid,name:u.name}}));$('addGroupMember').hidden=true;clearAttachment();setEmojiOpen(false);emojiToggle.disabled=false;drawContacts();drawGroups();$('chatWith').textContent=u.name+' · '+schoolLabel(u);$('messageText').disabled=false;$('sendMessage').disabled=false;status('');const id=conversationId(self.uid,u.uid),key='p:'+id,ref=doc(db,'conversations',id);try{const existing=await getDoc(ref);if(!existing.exists())await setDoc(ref,{participants:[self.uid,u.uid].sort(),createdAt:serverTimestamp()});if(token!==selectionToken)return;markSeen(key);startMessages(ref,key);}catch(e){status('Tidak dapat membuka percakapan: '+e.message);}}
+async function selectGroup(g){const keyForUnhide='g:'+g.id;if(isHidden(keyForUnhide)){hiddenChats.delete(keyForUnhide);saveHidden();}openMobileChat();++selectionToken;if(stopMessages){stopMessages();stopMessages=null;}pasuraStopMessageReviews();peer={...g,kind:'group'};window.dispatchEvent(new CustomEvent('nusa:peer',{detail:{kind:'group'}}));$('addGroupMember').hidden=false;clearAttachment();setEmojiOpen(false);emojiToggle.disabled=false;drawContacts();drawGroups();$('chatWith').textContent='👥 '+g.name;$('messageText').disabled=false;$('sendMessage').disabled=false;status('');const key='g:'+g.id;markSeen(key);startMessages(doc(db,'groups',g.id),key);}
 
 // Penambahan anggota ke grup yang sedang dibuka.
 function renderAddMembers(){
