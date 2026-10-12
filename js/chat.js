@@ -129,29 +129,45 @@ function watchGroups(){if(stopGroups)stopGroups();stopGroups=onSnapshot(query(co
 const DRIVE_API='https://script.google.com/macros/s/AKfycbwmJeQraBC2aph41UnxgRRhOn-kHwV-XeSkHOc1CsFuiixjSucbTNtn4uAOFTJgf_M/exec';
 const DRIVE_MAX=10*1024*1024;
 const DRIVE_EXT=new Set(['pdf','docx','xlsx','ppt','jpg','jpeg','png','gif']);
-const drivePending=new Map();let driveFrame=null;let driveReady=null;let selectedFile=null;
-function ensureDriveFrame(){
- if(driveReady)return driveReady;
- driveReady=new Promise((resolve,reject)=>{
-  const frame=document.createElement('iframe');frame.title='PASURA Drive API';frame.hidden=true;frame.style.display='none';
-  frame.src=DRIVE_API+'?bridge=1';frame.onload=()=>resolve(frame);frame.onerror=()=>reject(Error('Tidak dapat memuat jembatan Google Drive.'));
-  document.body.append(frame);driveFrame=frame;
- });return driveReady;
+// V5: request/response handshake through a dedicated Apps Script popup.
+// The popup must be opened synchronously from a user click (before awaits).
+let selectedFile=null;
+function openDriveBridge(){
+ const nonce=crypto.randomUUID();
+ const url=DRIVE_API+'?bridge=1&nonce='+encodeURIComponent(nonce);
+ const popup=window.open(url,'pasura_drive_'+nonce,'popup=yes,width=540,height=620');
+ if(!popup)throw Error('Jendela Google Drive diblokir. Izinkan pop-up untuk situs PASURA Chat.');
+ return {popup,nonce};
 }
-window.addEventListener('message',event=>{
- if(!driveFrame||event.source!==driveFrame.contentWindow||!event.data||event.data.pasuraDrive!==true)return;
- const p=drivePending.get(event.data.id);if(!p)return;
- clearTimeout(p.timer);drivePending.delete(event.data.id);p.resolve(event.data.result);
-});
-async function driveRequest(request){
- await ensureDriveFrame();const user=auth.currentUser;if(!user)throw Error('Silakan masuk kembali.');
+function trustedBridgeOrigin(origin){
+ try{const u=new URL(origin);return u.protocol==='https:' && (u.hostname==='script.google.com'||u.hostname==='script.googleusercontent.com'||u.hostname.endsWith('.googleusercontent.com'));}catch{return false;}
+}
+async function driveRequest(request,bridge){
+ if(!bridge)throw Error('Jendela Google Drive belum dibuka.');
+ const {popup,nonce}=bridge;
+ const user=auth.currentUser;if(!user){popup.close();throw Error('Silakan masuk kembali.');}
  request.idToken=await user.getIdToken();
  const id=crypto.randomUUID();
- const result=await new Promise((resolve,reject)=>{
-  const timer=setTimeout(()=>{drivePending.delete(id);reject(Error('Google Drive tidak merespons. Periksa deployment dan izin Apps Script.'));},90000);
-  drivePending.set(id,{resolve,reject,timer});driveFrame.contentWindow.postMessage({pasuraDrive:true,id,request},'*');
+ return await new Promise((resolve,reject)=>{
+  let completed=false,receivedReady=false;
+  const cleanup=()=>{completed=true;clearTimeout(timer);clearInterval(check);window.removeEventListener('message',onMessage);try{popup.close();}catch{}};
+  const fail=message=>{if(completed)return;cleanup();reject(Error(message));};
+  const timer=setTimeout(()=>fail(receivedReady?'Google Drive tidak menyelesaikan permintaan dalam 90 detik.':'Jendela penghubung Google Drive tidak siap. Periksa deployment Bridge.html dan izin pop-up.'),90000);
+  const check=setInterval(()=>{if(popup.closed)fail('Jendela penghubung ditutup sebelum selesai.');},800);
+  function onMessage(event){
+   const data=event.data;
+   if(!trustedBridgeOrigin(event.origin)||!data||data.pasuraDrive!==true||data.nonce!==nonce)return;
+   if(data.type==='ready'){
+    receivedReady=true;
+    if(!event.source)return fail('Jendela Google Drive tidak menyediakan saluran komunikasi.');
+    event.source.postMessage({pasuraDrive:true,type:'request',nonce,id,request},event.origin);
+   }else if(data.type==='result'&&data.id===id){
+    cleanup();if(!data.result?.ok)reject(Error(data.result?.error||'Google Drive menolak permintaan.'));
+    else resolve(data.result.file);
+   }
+  }
+  window.addEventListener('message',onMessage);
  });
- if(!result||!result.ok)throw Error(result?.error||'Operasi Google Drive gagal.');return result.file;
 }
 function clearAttachment(){selectedFile=null;$('attachmentFile').value='';$('attachmentPreview').hidden=true;$('attachmentPreview').replaceChildren();}
 // Label HTML native membuka file picker tanpa bergantung pada eksekusi JavaScript.
@@ -177,7 +193,7 @@ function renderDriveAttachment(box,m){
  const btn=document.createElement('button');btn.type='button';btn.textContent='📎 '+(f.name||'Lampiran')+' · Unduh';btn.style.width='auto';
  btn.addEventListener('click',async e=>{
   e.stopPropagation();btn.disabled=true;const label=btn.textContent;btn.textContent='Mengunduh...';
-  try{const data=await driveRequest({action:'download',fileId:f.id,conversationId:f.conversationId});
+  try{const bridge=openDriveBridge();const data=await driveRequest({action:'download',fileId:f.id,conversationId:f.conversationId},bridge);
    const raw=atob(data.base64);const bytes=new Uint8Array(raw.length);for(let i=0;i<raw.length;i++)bytes[i]=raw.charCodeAt(i);
    const url=URL.createObjectURL(new Blob([bytes],{type:data.mimeType||'application/octet-stream'}));
    const a=document.createElement('a');a.href=url;a.download=data.name||'lampiran';document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),30000);
@@ -270,11 +286,13 @@ $('messageForm').addEventListener('submit',async e=>{
  if((!text&&!file)||text.length>2000)return;
  const btn=$('sendMessage');btn.disabled=true;$('attachToggle').disabled=true;
  const kind=peer.kind,conversationIdValue=kind==='group'?peer.id:conversationId(self.uid,peer.uid);
+ let bridge=null;
+ try{if(file)bridge=openDriveBridge();}catch(err){status('Lampiran gagal: '+err.message);btn.disabled=false;$('attachToggle').disabled=false;return;}
  try{
   let attachment=null;
   if(file){status('Mengunggah '+file.name+' ke Google Drive...');
    const base64=await fileAsBase64(file);
-   attachment=await driveRequest({action:'upload',kind,conversationId:conversationIdValue,fileName:file.name,mimeType:file.type||({'pdf':'application/pdf','docx':'application/vnd.openxmlformats-officedocument.wordprocessingml.document','xlsx':'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet','ppt':'application/vnd.ms-powerpoint','jpg':'image/jpeg','jpeg':'image/jpeg','png':'image/png','gif':'image/gif'}[file.name.split('.').pop().toLowerCase()]),base64});
+   attachment=await driveRequest({action:'upload',kind,conversationId:conversationIdValue,fileName:file.name,mimeType:file.type||({'pdf':'application/pdf','docx':'application/vnd.openxmlformats-officedocument.wordprocessingml.document','xlsx':'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet','ppt':'application/vnd.ms-powerpoint','jpg':'image/jpeg','jpeg':'image/jpeg','png':'image/png','gif':'image/gif'}[file.name.split('.').pop().toLowerCase()]),base64},bridge);
   }
   const message={senderId:self.uid,text:text||'📎 Lampiran',createdAt:serverTimestamp()};
   if(attachment)message.attachment={id:attachment.id,name:attachment.name,mimeType:attachment.mimeType,size:attachment.size,conversationId:conversationIdValue,kind};
