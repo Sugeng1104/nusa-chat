@@ -125,11 +125,63 @@ function drawGroups(){const list=$('groups');list.replaceChildren();const search
 function monitorMessages(key,ref,collectionPath,kind){if(watchers.has(key))return;const unsubscribe=onSnapshot(query(collection(ref,'messages'),orderBy('createdAt','desc'),limit(1)),snap=>{if(snap.empty){if(hasMessages.delete(key))drawContacts();return;}if(!hasMessages.has(key)){hasMessages.add(key);drawContacts();}const msg=snap.docs[0].data(),time=msg.createdAt?.toMillis?.();if(time&&msg.senderId!==self.uid)incomingAlert(key,msg,time);if(isHidden(key)&&time&&time>hiddenChats.get(key)&&msg.senderId!==self.uid){hiddenChats.delete(key);saveHidden();drawContacts();drawGroups();}if(isHidden(key))return;if(!time||msg.senderId===self.uid)return;const stored=lastSeen[key]??Number(localStorage.getItem(seenKey(key))||0);if(time>stored&&!(peer?.kind===kind&&((kind==='private'&&'p:'+conversationId(self.uid,peer.uid)===key)||(kind==='group'&&'g:'+peer.id===key))&&document.visibilityState==='visible')){unread.add(key);drawContacts();drawGroups();drawNotice();}else if(time>stored&&peer&&document.visibilityState==='visible'){markSeen(key);}},e=>{console.warn('Notifikasi tidak tersedia:',key,e.code);});watchers.set(key,unsubscribe);}
 function watchPrivate(){if(stopConversations)stopConversations();stopConversations=onSnapshot(query(collection(db,'conversations'),where('participants','array-contains',self.uid)),snap=>{const valid=new Set();for(const d of snap.docs){const v=d.data();if(!Array.isArray(v.participants)||v.participants.length!==2)continue;const key='p:'+d.id;valid.add(key);monitorMessages(key,d.ref,null,'private');}for(const [k,stop] of watchers){if(k.startsWith('p:')&&!valid.has(k)){stop();watchers.delete(k);unread.delete(k);hasMessages.delete(k);}}drawContacts();drawNotice();},e=>status('Notifikasi pribadi gagal: '+e.message));}
 function watchGroups(){if(stopGroups)stopGroups();stopGroups=onSnapshot(query(collection(db,'groups'),where('members','array-contains',self.uid)),snap=>{groups=snap.docs.map(d=>({id:d.id,...d.data()}));if(peer?.kind==='group'){const latest=groups.find(g=>g.id===peer.id);if(latest)peer={...latest,kind:'group'};}const valid=new Set();for(const d of snap.docs){const key='g:'+d.id;valid.add(key);monitorMessages(key,d.ref,null,'group');}for(const [k,stop] of watchers){if(k.startsWith('g:')&&!valid.has(k)){stop();watchers.delete(k);unread.delete(k);hasMessages.delete(k);}}drawGroups();drawNotice();},e=>status('Gagal memuat grup: '+e.message));}
-function showMessages(snap,key){const area=$('messages');area.replaceChildren();if(snap.empty){const p=document.createElement('p');p.className='chat-empty';p.textContent='Belum ada pesan. Mulai percakapan!';area.append(p);return;}for(const d of snap.docs){const m=d.data();const hs=historyFor(key);if(hs.ids.includes(d.id)||(m.createdAt?.toMillis?.()||0)<=hs.cutoff)continue;const box=document.createElement('div');box.className='bubble'+(m.senderId===self.uid?' mine':'');box.textContent=m.text;box.dataset.messageId=d.id;box.tabIndex=0;box.title='Tekan dan tahan 1 detik untuk pilihan hapus';longPress(box,()=>openActions({type:'message',key,id:d.id}));const time=document.createElement('time');time.textContent=m.createdAt?.toDate?.().toLocaleString('id-ID',{dateStyle:'short',timeStyle:'short'})||'Mengirim...';box.append(time);area.append(box);}area.scrollTop=area.scrollHeight;}
+// PASURA Google Drive bridge: cross-origin transport via Apps Script HTML Service.
+const DRIVE_API='https://script.google.com/macros/s/AKfycbwmJeQraBC2aph41UnxgRRhOn-kHwV-XeSkHOc1CsFuiixjSucbTNtn4uAOFTJgf_M/exec';
+const DRIVE_MAX=10*1024*1024;
+const DRIVE_EXT=new Set(['pdf','docx','xlsx','ppt','jpg','jpeg','png','gif']);
+const drivePending=new Map();let driveFrame=null;let driveReady=null;let selectedFile=null;
+function ensureDriveFrame(){
+ if(driveReady)return driveReady;
+ driveReady=new Promise((resolve,reject)=>{
+  const frame=document.createElement('iframe');frame.title='PASURA Drive API';frame.hidden=true;frame.style.display='none';
+  frame.src=DRIVE_API+'?bridge=1';frame.onload=()=>resolve(frame);frame.onerror=()=>reject(Error('Tidak dapat memuat jembatan Google Drive.'));
+  document.body.append(frame);driveFrame=frame;
+ });return driveReady;
+}
+window.addEventListener('message',event=>{
+ if(!driveFrame||event.source!==driveFrame.contentWindow||!event.data||event.data.pasuraDrive!==true)return;
+ const p=drivePending.get(event.data.id);if(!p)return;
+ clearTimeout(p.timer);drivePending.delete(event.data.id);p.resolve(event.data.result);
+});
+async function driveRequest(request){
+ await ensureDriveFrame();const user=auth.currentUser;if(!user)throw Error('Silakan masuk kembali.');
+ request.idToken=await user.getIdToken();
+ const id=crypto.randomUUID();
+ const result=await new Promise((resolve,reject)=>{
+  const timer=setTimeout(()=>{drivePending.delete(id);reject(Error('Google Drive tidak merespons. Periksa deployment dan izin Apps Script.'));},90000);
+  drivePending.set(id,{resolve,reject,timer});driveFrame.contentWindow.postMessage({pasuraDrive:true,id,request},'*');
+ });
+ if(!result||!result.ok)throw Error(result?.error||'Operasi Google Drive gagal.');return result.file;
+}
+function clearAttachment(){selectedFile=null;$('attachmentFile').value='';$('attachmentPreview').hidden=true;$('attachmentPreview').replaceChildren();}
+$('attachToggle').addEventListener('click',()=>{if(peer&&self)$('attachmentFile').click();});
+$('attachmentFile').addEventListener('change',()=>{
+ const file=$('attachmentFile').files?.[0];if(!file){clearAttachment();return;}
+ const ext=file.name.split('.').pop().toLowerCase();
+ if(!DRIVE_EXT.has(ext)||file.size>DRIVE_MAX||file.size===0){status('Format tidak didukung atau file melebihi 10 MB.');clearAttachment();return;}
+ selectedFile=file;const preview=$('attachmentPreview');preview.replaceChildren();preview.hidden=false;
+ const name=document.createElement('span');name.textContent='📎 '+file.name+' ('+(file.size/1024/1024).toFixed(2)+' MB)';
+ const remove=document.createElement('button');remove.type='button';remove.textContent='✕';remove.title='Batalkan lampiran';remove.addEventListener('click',clearAttachment);preview.append(name,remove);
+});
+function fileAsBase64(file){return new Promise((resolve,reject)=>{const r=new FileReader();r.onload=()=>resolve(String(r.result).split(',')[1]);r.onerror=()=>reject(Error('File tidak dapat dibaca.'));r.readAsDataURL(file);});}
+function renderDriveAttachment(box,m){
+ const f=m.attachment;if(!f||!f.id)return;
+ const wrap=document.createElement('div');wrap.className='nc-file-bubble';
+ const btn=document.createElement('button');btn.type='button';btn.textContent='📎 '+(f.name||'Lampiran')+' · Unduh';btn.style.width='auto';
+ btn.addEventListener('click',async e=>{
+  e.stopPropagation();btn.disabled=true;const label=btn.textContent;btn.textContent='Mengunduh...';
+  try{const data=await driveRequest({action:'download',fileId:f.id,conversationId:f.conversationId});
+   const raw=atob(data.base64);const bytes=new Uint8Array(raw.length);for(let i=0;i<raw.length;i++)bytes[i]=raw.charCodeAt(i);
+   const url=URL.createObjectURL(new Blob([bytes],{type:data.mimeType||'application/octet-stream'}));
+   const a=document.createElement('a');a.href=url;a.download=data.name||'lampiran';document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),30000);
+  }catch(err){status('Unduhan gagal: '+err.message);}finally{btn.disabled=false;btn.textContent=label;}
+ });wrap.append(btn);box.append(wrap);
+}
+function showMessages(snap,key){const area=$('messages');area.replaceChildren();if(snap.empty){const p=document.createElement('p');p.className='chat-empty';p.textContent='Belum ada pesan. Mulai percakapan!';area.append(p);return;}for(const d of snap.docs){const m=d.data();const hs=historyFor(key);if(hs.ids.includes(d.id)||(m.createdAt?.toMillis?.()||0)<=hs.cutoff)continue;const box=document.createElement('div');box.className='bubble'+(m.senderId===self.uid?' mine':'');box.textContent=m.text;renderDriveAttachment(box,m);box.dataset.messageId=d.id;box.tabIndex=0;box.title='Tekan dan tahan 1 detik untuk pilihan hapus';longPress(box,()=>openActions({type:'message',key,id:d.id}));const time=document.createElement('time');time.textContent=m.createdAt?.toDate?.().toLocaleString('id-ID',{dateStyle:'short',timeStyle:'short'})||'Mengirim...';box.append(time);area.append(box);}area.scrollTop=area.scrollHeight;}
 function conversationId(a,b){return [a,b].sort().join('_');}
 function startMessages(ref,key){stopMessages=onSnapshot(query(collection(ref,'messages'),orderBy('createdAt','desc'),limit(100)),s=>{showMessages({docs:[...s.docs].reverse(),empty:s.empty},key);if(document.visibilityState==='visible')markSeen(key);},e=>status('Gagal membaca pesan: '+e.message));}
-async function selectPeer(u){const keyForUnhide='p:'+conversationId(self.uid,u.uid);if(isHidden(keyForUnhide)){hiddenChats.delete(keyForUnhide);saveHidden();}openMobileChat();const token=++selectionToken;if(stopMessages){stopMessages();stopMessages=null;}peer={...u,kind:'private'};window.dispatchEvent(new CustomEvent('nusa:peer',{detail:{kind:'private',uid:u.uid,name:u.name}}));$('addGroupMember').hidden=true;setEmojiOpen(false);emojiToggle.disabled=false;drawContacts();drawGroups();$('chatWith').textContent=u.name+' · '+schoolLabel(u);$('messageText').disabled=false;$('sendMessage').disabled=false;status('');const id=conversationId(self.uid,u.uid),key='p:'+id,ref=doc(db,'conversations',id);try{const existing=await getDoc(ref);if(!existing.exists())await setDoc(ref,{participants:[self.uid,u.uid].sort(),createdAt:serverTimestamp()});if(token!==selectionToken)return;markSeen(key);startMessages(ref,key);}catch(e){status('Tidak dapat membuka percakapan: '+e.message);}}
-async function selectGroup(g){const keyForUnhide='g:'+g.id;if(isHidden(keyForUnhide)){hiddenChats.delete(keyForUnhide);saveHidden();}openMobileChat();++selectionToken;if(stopMessages){stopMessages();stopMessages=null;}peer={...g,kind:'group'};window.dispatchEvent(new CustomEvent('nusa:peer',{detail:{kind:'group'}}));$('addGroupMember').hidden=false;setEmojiOpen(false);emojiToggle.disabled=false;drawContacts();drawGroups();$('chatWith').textContent='👥 '+g.name;$('messageText').disabled=false;$('sendMessage').disabled=false;status('');const key='g:'+g.id;markSeen(key);startMessages(doc(db,'groups',g.id),key);}
+async function selectPeer(u){const keyForUnhide='p:'+conversationId(self.uid,u.uid);if(isHidden(keyForUnhide)){hiddenChats.delete(keyForUnhide);saveHidden();}openMobileChat();const token=++selectionToken;if(stopMessages){stopMessages();stopMessages=null;}peer={...u,kind:'private'};window.dispatchEvent(new CustomEvent('nusa:peer',{detail:{kind:'private',uid:u.uid,name:u.name}}));$('addGroupMember').hidden=true;clearAttachment();setEmojiOpen(false);emojiToggle.disabled=false;drawContacts();drawGroups();$('chatWith').textContent=u.name+' · '+schoolLabel(u);$('messageText').disabled=false;$('sendMessage').disabled=false;status('');const id=conversationId(self.uid,u.uid),key='p:'+id,ref=doc(db,'conversations',id);try{const existing=await getDoc(ref);if(!existing.exists())await setDoc(ref,{participants:[self.uid,u.uid].sort(),createdAt:serverTimestamp()});if(token!==selectionToken)return;markSeen(key);startMessages(ref,key);}catch(e){status('Tidak dapat membuka percakapan: '+e.message);}}
+async function selectGroup(g){const keyForUnhide='g:'+g.id;if(isHidden(keyForUnhide)){hiddenChats.delete(keyForUnhide);saveHidden();}openMobileChat();++selectionToken;if(stopMessages){stopMessages();stopMessages=null;}peer={...g,kind:'group'};window.dispatchEvent(new CustomEvent('nusa:peer',{detail:{kind:'group'}}));$('addGroupMember').hidden=false;clearAttachment();setEmojiOpen(false);emojiToggle.disabled=false;drawContacts();drawGroups();$('chatWith').textContent='👥 '+g.name;$('messageText').disabled=false;$('sendMessage').disabled=false;status('');const key='g:'+g.id;markSeen(key);startMessages(doc(db,'groups',g.id),key);}
 
 // Penambahan anggota ke grup yang sedang dibuka.
 function renderAddMembers(){
@@ -205,7 +257,26 @@ emojiToggle.addEventListener('click',()=>{if(!emojiToggle.disabled)setEmojiOpen(
 document.addEventListener('click',e=>{if(!e.target.closest('.emoji-wrap'))setEmojiOpen(false);});
 document.addEventListener('keydown',e=>{if(e.key==='Escape')setEmojiOpen(false);});
 $('contactSearch').addEventListener('input',()=>{drawContacts();drawGroups();});
-$('messageForm').addEventListener('submit',async e=>{e.preventDefault();if(!peer||!self)return;const text=$('messageText').value.trim();if(!text||text.length>2000)return;const btn=$('sendMessage');btn.disabled=true;try{await addDoc(collection(db,peer.kind==='group'?'groups':'conversations',peer.kind==='group'?peer.id:conversationId(self.uid,peer.uid),'messages'),{senderId:self.uid,text,createdAt:serverTimestamp()});$('messageText').value='';status('');}catch(err){status('Pesan gagal dikirim: '+err.message);}finally{btn.disabled=false;}});
+$('messageForm').addEventListener('submit',async e=>{
+ e.preventDefault();if(!peer||!self)return;
+ const text=$('messageText').value.trim();const file=selectedFile;
+ if((!text&&!file)||text.length>2000)return;
+ const btn=$('sendMessage');btn.disabled=true;$('attachToggle').disabled=true;
+ const kind=peer.kind,conversationIdValue=kind==='group'?peer.id:conversationId(self.uid,peer.uid);
+ try{
+  let attachment=null;
+  if(file){status('Mengunggah '+file.name+' ke Google Drive...');
+   const base64=await fileAsBase64(file);
+   attachment=await driveRequest({action:'upload',kind,conversationId:conversationIdValue,fileName:file.name,mimeType:file.type||({'pdf':'application/pdf','docx':'application/vnd.openxmlformats-officedocument.wordprocessingml.document','xlsx':'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet','ppt':'application/vnd.ms-powerpoint','jpg':'image/jpeg','jpeg':'image/jpeg','png':'image/png','gif':'image/gif'}[file.name.split('.').pop().toLowerCase()]),base64});
+  }
+  const message={senderId:self.uid,text:text||'📎 Lampiran',createdAt:serverTimestamp()};
+  if(attachment)message.attachment={id:attachment.id,name:attachment.name,mimeType:attachment.mimeType,size:attachment.size,conversationId:conversationIdValue,kind};
+  await addDoc(collection(db,kind==='group'?'groups':'conversations',conversationIdValue,'messages'),message);
+  $('messageText').value='';clearAttachment();status('');
+ }catch(err){status('Pesan/lampiran gagal dikirim: '+err.message);}
+ finally{btn.disabled=false;$('attachToggle').disabled=false;}
+});
+
 onAuthStateChanged(auth,async u=>{if(!u){back();return;}try{await reload(u);if(!u.emailVerified){back();return;}const p=await getDoc(doc(db,'users',u.uid));if(!p.exists()||p.data().status!=='active'){back();return;}self={uid:u.uid,...p.data()};window.dispatchEvent(new CustomEvent('nusa:auth',{detail:{uid:u.uid,name:self.name}}));loadHidden();loadHistory();$('welcome').textContent='Selamat datang, '+self.name;const snap=await getDocs(query(collection(db,'users'),where('status','==','active')));contacts=snap.docs.filter(d=>d.id!==u.uid).map(d=>({uid:d.id,name:d.data().name||'Pengguna',orgId:d.data().orgId||''}));
 // Ambil nama instansi dari organizations; jangan tampilkan ID dokumen jika nama tersedia.
 try {
