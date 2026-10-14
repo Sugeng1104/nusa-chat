@@ -1,0 +1,336 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function verified() { return signedIn() && request.auth.token.email_verified == true; }
+    function me() { return get(/databases/$(database)/documents/users/$(request.auth.uid)); }
+    function active() { return verified() && me().data.status == 'active'; }
+    function superAdmin() { return active() && me().data.role == 'super_admin'; }
+    function orgAdmin() { return active() && me().data.role == 'org_admin'; }
+    function manages(orgId) { return superAdmin() || (orgAdmin() && me().data.orgId == orgId); }
+
+    match /organizations/{orgId} {
+      allow get, list: if true;
+      allow create: if superAdmin()
+        && request.resource.data.keys().hasOnly(['name','active','createdAt'])
+        && request.resource.data.name is string
+        && request.resource.data.name.size() >= 3
+        && request.resource.data.active == true
+        && request.resource.data.createdAt == request.time;
+      allow update, delete: if false;
+    }
+
+    match /orgSecrets/{orgId} {
+      allow get: if superAdmin();
+      allow list: if false;
+      allow create: if superAdmin()
+        && !exists(/databases/$(database)/documents/orgSecrets/$(orgId))
+        && existsAfter(/databases/$(database)/documents/organizations/$(orgId))
+        && request.resource.data.keys().hasOnly(['code','createdAt'])
+        && request.resource.data.code is string
+        && request.resource.data.code.size() == 12
+        && request.resource.data.createdAt == request.time;
+      allow update, delete: if false;
+    }
+
+    match /registrationProofs/{uid} {
+      allow read: if false;
+      allow create: if verified() && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(['orgId','code','createdAt'])
+        && request.resource.data.orgId is string
+        && request.resource.data.code is string
+        && request.resource.data.createdAt == request.time
+        && exists(/databases/$(database)/documents/orgSecrets/$(request.resource.data.orgId))
+        && request.resource.data.code == get(/databases/$(database)/documents/orgSecrets/$(request.resource.data.orgId)).data.code
+        && getAfter(/databases/$(database)/documents/users/$(uid)).data.orgId == request.resource.data.orgId;
+      allow update, delete: if false;
+    }
+
+    match /users/{uid} {
+      allow get: if signedIn() && (request.auth.uid == uid || manages(resource.data.orgId) || (active() && resource.data.status == 'active'));
+      allow list: if active() && (superAdmin() || (orgAdmin() && resource.data.orgId == me().data.orgId) || resource.data.status == 'active');
+      allow create: if verified() && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(['name','email','orgId','role','status','createdAt'])
+        && request.resource.data.name is string
+        && request.resource.data.name.size() >= 2
+        && request.resource.data.email == request.auth.token.email
+        && request.resource.data.orgId is string
+        && exists(/databases/$(database)/documents/organizations/$(request.resource.data.orgId))
+        && get(/databases/$(database)/documents/organizations/$(request.resource.data.orgId)).data.active == true
+        && request.resource.data.role == 'member'
+        && request.resource.data.status == 'pending'
+        && request.resource.data.createdAt == request.time
+        && getAfter(/databases/$(database)/documents/registrationProofs/$(uid)).data.orgId == request.resource.data.orgId;
+
+      allow update: if (manages(resource.data.orgId)
+        && resource.data.status == 'pending'
+        && resource.data.role == 'member'
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status','reviewedBy','reviewedAt'])
+        && request.resource.data.status in ['active','rejected']
+        && request.resource.data.reviewedBy == request.auth.uid
+        && request.resource.data.reviewedAt == request.time)
+        || (superAdmin()
+          && resource.data.status == 'active'
+          && resource.data.role == 'member'
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['role'])
+          && request.resource.data.role == 'org_admin')
+        || (superAdmin()
+          && uid != request.auth.uid
+          && resource.data.role != 'super_admin'
+          && resource.data.status in ['active','pending','rejected']
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status','deletedBy','deletedAt'])
+          && request.resource.data.status == 'deleted'
+          && request.resource.data.deletedBy == request.auth.uid
+          && request.resource.data.deletedAt == request.time);
+      allow delete: if false;
+      // V17: only the owner can register and remove their FCM tokens.
+      match /fcmTokens/{tokenId} {
+        allow get, list: if signedIn() && request.auth.uid == uid;
+        allow create, update: if active() && request.auth.uid == uid
+          && request.resource.data.keys().hasOnly(['token','updatedAt','platform'])
+          && request.resource.data.token is string
+          && request.resource.data.token.size() > 20
+          && request.resource.data.token.size() <= 4096
+          && request.resource.data.platform == 'web'
+          && request.resource.data.updatedAt == request.time;
+        allow delete: if signedIn() && request.auth.uid == uid;
+      }
+    }
+
+    match /conversations/{conversationId} {
+      function participant() { return active() && request.auth.uid in resource.data.participants; }
+      allow get: if participant() || (active() && !exists(/databases/$(database)/documents/conversations/$(conversationId)));
+      allow list: if participant();
+      allow create: if active()
+        && request.resource.data.keys().hasOnly(['participants','createdAt'])
+        && request.resource.data.participants is list
+        && request.resource.data.participants.size() == 2
+        && request.resource.data.participants[0] is string
+        && request.resource.data.participants[1] is string
+        && request.resource.data.participants[0] < request.resource.data.participants[1]
+        && request.auth.uid in request.resource.data.participants
+        && conversationId == request.resource.data.participants[0] + '_' + request.resource.data.participants[1]
+        && get(/databases/$(database)/documents/users/$(request.resource.data.participants[0])).data.status == 'active'
+        && get(/databases/$(database)/documents/users/$(request.resource.data.participants[1])).data.status == 'active'
+        && request.resource.data.createdAt == request.time;
+      allow update, delete: if false;
+      match /messages/{messageId} {
+        function parent() { return get(/databases/$(database)/documents/conversations/$(conversationId)); }
+        allow get, list: if active() && request.auth.uid in parent().data.participants;
+        allow create: if active()
+          && request.auth.uid in parent().data.participants
+          && request.resource.data.keys().hasOnly(['senderId','text','createdAt','attachment','linkStatus'])
+          && request.resource.data.senderId == request.auth.uid
+          && request.resource.data.text is string
+          && request.resource.data.text.size() > 0
+          && request.resource.data.text.size() <= 2000
+          && (!('attachment' in request.resource.data) || (
+            request.resource.data.attachment is map
+            && request.resource.data.attachment.keys().hasAll(['id','name','mimeType','size','conversationId','kind'])
+            && request.resource.data.attachment.keys().hasOnly(['id','name','mimeType','size','conversationId','kind'])
+            && request.resource.data.attachment.id is string
+            && request.resource.data.attachment.id.matches('[A-Za-z0-9_-]{10,200}')
+            && request.resource.data.attachment.name is string
+            && request.resource.data.attachment.name.size() > 0
+            && request.resource.data.attachment.name.size() <= 150
+            && request.resource.data.attachment.mimeType is string
+            && request.resource.data.attachment.mimeType in [
+              'application/pdf',
+              'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+              'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+              'application/vnd.ms-powerpoint',
+              'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+              'image/jpeg', 'image/png', 'image/gif'
+            ]
+            && request.resource.data.attachment.size is int
+            && request.resource.data.attachment.size > 0
+            && request.resource.data.attachment.size <= 10485760
+            && request.resource.data.attachment.conversationId == conversationId
+            && request.resource.data.attachment.kind == 'private'
+          ))
+          && (!('linkStatus' in request.resource.data) || request.resource.data.linkStatus == 'pending')
+          && request.resource.data.createdAt == request.time;
+        allow update: if superAdmin()
+          && resource.data.linkStatus == 'pending'
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['linkStatus','linkUrl'])
+          && request.resource.data.linkStatus in ['approved','rejected']
+          && (request.resource.data.linkStatus == 'rejected' || (request.resource.data.linkUrl is string && request.resource.data.linkUrl.matches('https://[^ ]+')));
+        allow delete: if false;
+      }
+    }
+
+    match /groups/{groupId} {
+      function member() { return active() && request.auth.uid in resource.data.members; }
+      function activeUser(uid) {
+        return uid is string
+          && exists(/databases/$(database)/documents/users/$(uid))
+          && get(/databases/$(database)/documents/users/$(uid)).data.status == 'active';
+      }
+      function validMemberAddition() {
+        let before = resource.data.members;
+        let after = request.resource.data.members;
+        return before is list
+          && after is list
+          && before.size() >= 2
+          && before.size() < 20
+          && after.size() == before.size() + 1
+          && after.toSet().size() == after.size()
+          && after.toSet().hasAll(before)
+          && after[after.size() - 1] is string
+          && !(after[after.size() - 1] in before)
+          && activeUser(after[after.size() - 1]);
+      }
+      allow get, list: if member();
+      allow create: if active()
+        && request.resource.data.keys().hasOnly(['name','members','createdBy','createdAt'])
+        && request.resource.data.name is string
+        && request.resource.data.name.size() >= 3
+        && request.resource.data.name.size() <= 80
+        && request.resource.data.members is list
+        && request.resource.data.members.size() >= 2
+        && request.resource.data.members.size() <= 20
+        && request.resource.data.members.toSet().size() == request.resource.data.members.size()
+        && request.auth.uid in request.resource.data.members
+        && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.createdAt == request.time;
+      allow update: if member()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['members'])
+        && validMemberAddition();
+      allow delete: if false;
+      match /messages/{messageId} {
+        function parent() { return get(/databases/$(database)/documents/groups/$(groupId)); }
+        allow get, list: if active() && request.auth.uid in parent().data.members;
+        allow create: if active()
+          && request.auth.uid in parent().data.members
+          && request.resource.data.keys().hasOnly(['senderId','text','createdAt','attachment','linkStatus'])
+          && request.resource.data.senderId == request.auth.uid
+          && request.resource.data.text is string
+          && request.resource.data.text.size() > 0
+          && request.resource.data.text.size() <= 2000
+          && (!('attachment' in request.resource.data) || (
+            request.resource.data.attachment is map
+            && request.resource.data.attachment.keys().hasAll(['id','name','mimeType','size','conversationId','kind'])
+            && request.resource.data.attachment.keys().hasOnly(['id','name','mimeType','size','conversationId','kind'])
+            && request.resource.data.attachment.id is string
+            && request.resource.data.attachment.id.matches('[A-Za-z0-9_-]{10,200}')
+            && request.resource.data.attachment.name is string
+            && request.resource.data.attachment.name.size() > 0
+            && request.resource.data.attachment.name.size() <= 150
+            && request.resource.data.attachment.mimeType is string
+            && request.resource.data.attachment.mimeType in [
+              'application/pdf',
+              'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+              'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+              'application/vnd.ms-powerpoint',
+              'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+              'image/jpeg', 'image/png', 'image/gif'
+            ]
+            && request.resource.data.attachment.size is int
+            && request.resource.data.attachment.size > 0
+            && request.resource.data.attachment.size <= 10485760
+            && request.resource.data.attachment.conversationId == groupId
+            && request.resource.data.attachment.kind == 'group'
+          ))
+          && (!('linkStatus' in request.resource.data) || request.resource.data.linkStatus == 'pending')
+          && request.resource.data.createdAt == request.time;
+        allow update: if superAdmin()
+          && resource.data.linkStatus == 'pending'
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['linkStatus','linkUrl'])
+          && request.resource.data.linkStatus in ['approved','rejected']
+          && (request.resource.data.linkStatus == 'rejected' || (request.resource.data.linkUrl is string && request.resource.data.linkUrl.matches('https://[^ ]+')));
+        allow delete: if false;
+      }
+    }
+
+    // WebRTC Tahap 1: signaling panggilan pribadi; tidak menyimpan audio/video.
+    match /calls/{callId} {
+      function participant() {
+        return active() && (request.auth.uid == resource.data.callerId || request.auth.uid == resource.data.calleeId);
+      }
+      allow get, list: if participant();
+      allow create: if active()
+        && request.resource.data.keys().hasOnly(['callerId','calleeId','kind','status','createdAt','updatedAt'])
+        && request.resource.data.callerId == request.auth.uid
+        && request.resource.data.calleeId is string
+        && request.resource.data.calleeId != request.auth.uid
+        && exists(/databases/$(database)/documents/users/$(request.resource.data.calleeId))
+        && get(/databases/$(database)/documents/users/$(request.resource.data.calleeId)).data.status == 'active'
+        && request.resource.data.kind in ['audio','video']
+        && request.resource.data.status == 'ringing'
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.updatedAt == request.time;
+      allow update: if participant()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['offer','answer','status','updatedAt'])
+        && request.resource.data.updatedAt == request.time
+        && (
+          (request.auth.uid == resource.data.callerId
+            && resource.data.status == 'ringing'
+            && request.resource.data.status == 'ringing'
+            && !('offer' in resource.data)
+            && request.resource.data.offer.keys().hasOnly(['type','sdp'])
+            && request.resource.data.offer.type == 'offer'
+            && request.resource.data.offer.sdp is string
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['offer','updatedAt']))
+          || (request.auth.uid == resource.data.calleeId
+            && resource.data.status == 'ringing'
+            && request.resource.data.status == 'accepted'
+            && request.resource.data.answer.keys().hasOnly(['type','sdp'])
+            && request.resource.data.answer.type == 'answer'
+            && request.resource.data.answer.sdp is string
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['answer','status','updatedAt']))
+          || (request.resource.data.status in ['ended','rejected','missed']
+            && resource.data.status in ['ringing','accepted']
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status','updatedAt'])
+            && (request.resource.data.status != 'rejected' || request.auth.uid == resource.data.calleeId)
+            && (request.resource.data.status != 'missed' || request.auth.uid == resource.data.callerId))
+        );
+      allow delete: if false;
+      match /{side}/{candidateId} {
+        function callData() {return get(/databases/$(database)/documents/calls/$(callId)).data;}
+        function authorized() {
+          return active() && (
+            (side == 'callerCandidates' && request.auth.uid == callData().callerId)
+            || (side == 'calleeCandidates' && request.auth.uid == callData().calleeId)
+          );
+        }
+        function participantCandidate() {
+          return active() && side in ['callerCandidates','calleeCandidates']
+            && request.auth.uid in [callData().callerId,callData().calleeId];
+        }
+        allow get, list: if participantCandidate();
+        allow create: if authorized()
+          && request.resource.data.keys().hasOnly(['candidate','uid','createdAt'])
+          && request.resource.data.uid == request.auth.uid
+          && request.resource.data.candidate is map
+          && request.resource.data.candidate.keys().hasOnly(['candidate','sdpMid','sdpMLineIndex','usernameFragment'])
+          && request.resource.data.createdAt == request.time;
+        allow update, delete: if false;
+      }
+    }
+    match /{document=**} { allow read, write: if false; }
+    match /linkReviews/{reviewId} {
+      allow get, list: if superAdmin() || (active() && (resource.data.senderId == request.auth.uid || (resource.data.kind == 'conversations' && request.auth.uid in get(/databases/$(database)/documents/conversations/$(resource.data.chatId)).data.participants) || (resource.data.kind == 'groups' && request.auth.uid in get(/databases/$(database)/documents/groups/$(resource.data.chatId)).data.members)));
+      allow create: if active()
+        && request.resource.data.keys().hasOnly(['kind','chatId','messageId','senderId','urls','reviewStatus','createdAt'])
+        && request.resource.data.senderId == request.auth.uid
+        && request.resource.data.kind in ['groups','conversations']
+        && request.resource.data.chatId is string
+        && request.resource.data.messageId is string
+        && reviewId == request.resource.data.messageId
+        && request.resource.data.urls is list
+        && request.resource.data.urls.size() == 1
+        && request.resource.data.urls[0] is string
+        && request.resource.data.urls[0].size() <= 2000
+        && request.resource.data.reviewStatus == 'pending'
+        && request.resource.data.createdAt == request.time;
+      allow update: if superAdmin()
+        && resource.data.reviewStatus == 'pending'
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['reviewStatus','reviewedBy','reviewedAt'])
+        && request.resource.data.reviewStatus in ['approved','rejected']
+        && request.resource.data.reviewedBy == request.auth.uid
+        && request.resource.data.reviewedAt == request.time;
+      allow delete: if false;
+    }
+
+  }
+}
