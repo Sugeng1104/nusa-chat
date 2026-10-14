@@ -1,47 +1,19 @@
-// PASURA Chat V18 — Cloudflare Worker (FCM HTTP v1)
-// This worker intentionally requires a trusted server-side shared secret for push requests.
-// Never expose PUSH_API_SECRET in browser JavaScript or a public GitHub repository.
+// PASURA Chat V18 — verified Firebase user, Firestore checks, FCM HTTP v1.
+// Secrets stay in Cloudflare. No browser access to PUSH_API_SECRET.
+const PROJECT = 'nusa-chat-94098';
+const ORIGIN = 'https://sugeng1104.github.io';
 const enc = new TextEncoder();
-function b64url(data) {
-  const bytes = data instanceof Uint8Array ? data : enc.encode(data);
-  let s = ''; for (const b of bytes) s += String.fromCharCode(b);
-  return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-}
-async function getAccessToken(sa) {
-  const now = Math.floor(Date.now() / 1000);
-  const header = b64url(JSON.stringify({ alg: 'RS256', typ: 'JWT' }));
-  const claim = b64url(JSON.stringify({ iss: sa.client_email, scope: 'https://www.googleapis.com/auth/firebase.messaging', aud: 'https://oauth2.googleapis.com/token', iat: now, exp: now + 3600 }));
-  const signingInput = `${header}.${claim}`;
-  const pem = sa.private_key.replace(/-----BEGIN PRIVATE KEY-----|-----END PRIVATE KEY-----|\s/g, '');
-  const der = Uint8Array.from(atob(pem), c => c.charCodeAt(0));
-  const key = await crypto.subtle.importKey('pkcs8', der, { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['sign']);
-  const sig = new Uint8Array(await crypto.subtle.sign('RSASSA-PKCS1-v1_5', key, enc.encode(signingInput)));
-  const assertion = `${signingInput}.${b64url(sig)}`;
-  const response = await fetch('https://oauth2.googleapis.com/token', { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer', assertion }) });
-  if (!response.ok) throw new Error('OAuth token request failed');
-  return (await response.json()).access_token;
-}
-function reply(obj, status = 200) { return new Response(JSON.stringify(obj), { status, headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' } }); }
-export default {
-  async fetch(request, env) {
-    const url = new URL(request.url);
-    if (url.pathname === '/health' && request.method === 'GET') return reply({ ok: true, service: 'PASURA Chat FCM worker', configured: Boolean(env.FIREBASE_SERVICE_ACCOUNT) });
-    if (url.pathname !== '/send' || request.method !== 'POST') return reply({ error: 'Not found' }, 404);
-    // Server-to-server only: not safe for direct calls from a public web app.
-    if (!env.PUSH_API_SECRET || request.headers.get('x-push-api-secret') !== env.PUSH_API_SECRET) return reply({ error: 'Unauthorized' }, 401);
-    let body; try { body = await request.json(); } catch { return reply({ error: 'Invalid JSON' }, 400); }
-    if (typeof body.token !== 'string' || body.token.length > 4096 || body.token.length < 20) return reply({ error: 'Invalid FCM token' }, 400);
-    if (typeof body.title !== 'string' || body.title.length > 100 || typeof body.message !== 'string' || body.message.length > 300) return reply({ error: 'Invalid notification' }, 400);
-    if (!env.FIREBASE_SERVICE_ACCOUNT) return reply({ error: 'Server not configured' }, 503);
-    try {
-      const sa = JSON.parse(env.FIREBASE_SERVICE_ACCOUNT);
-      const accessToken = await getAccessToken(sa);
-      const response = await fetch(`https://fcm.googleapis.com/v1/projects/${encodeURIComponent(sa.project_id)}/messages:send`, {
-        method: 'POST', headers: { authorization: `Bearer ${accessToken}`, 'content-type': 'application/json' },
-        body: JSON.stringify({ message: { token: body.token, notification: { title: body.title, body: body.message }, webpush: { notification: { icon: '/icons/icon-192.png' } } } })
-      });
-      if (!response.ok) return reply({ error: 'FCM request failed', status: response.status }, 502);
-      return reply({ ok: true });
-    } catch { return reply({ error: 'Push delivery failed' }, 500); }
-  }
-};
+const json = (v,s=200)=>new Response(JSON.stringify(v),{status:s,headers:{'content-type':'application/json; charset=utf-8','cache-control':'no-store','access-control-allow-origin':ORIGIN,'vary':'Origin'}});
+function b64url(input){let s='';for(const b of input instanceof Uint8Array?input:enc.encode(input))s+=String.fromCharCode(b);return btoa(s).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');}
+function unbase64url(s){const raw=atob(s.replace(/-/g,'+').replace(/_/g,'/')+'='.repeat((4-s.length%4)%4));return Uint8Array.from(raw,c=>c.charCodeAt(0));}
+async function oauth(sa){const now=Math.floor(Date.now()/1000);const data=b64url(JSON.stringify({alg:'RS256',typ:'JWT'}))+'.'+b64url(JSON.stringify({iss:sa.client_email,scope:'https://www.googleapis.com/auth/datastore https://www.googleapis.com/auth/firebase.messaging',aud:'https://oauth2.googleapis.com/token',iat:now,exp:now+3600}));const der=unbase64url(sa.private_key.replace(/-----BEGIN PRIVATE KEY-----|-----END PRIVATE KEY-----|\s/g,''));const key=await crypto.subtle.importKey('pkcs8',der,{name:'RSASSA-PKCS1-v1_5',hash:'SHA-256'},false,['sign']);const signature=b64url(new Uint8Array(await crypto.subtle.sign('RSASSA-PKCS1-v1_5',key,enc.encode(data))));const r=await fetch('https://oauth2.googleapis.com/token',{method:'POST',headers:{'content-type':'application/x-www-form-urlencoded'},body:new URLSearchParams({grant_type:'urn:ietf:params:oauth:grant-type:jwt-bearer',assertion:data+'.'+signature})});if(!r.ok)throw Error('oauth '+r.status);return (await r.json()).access_token;}
+async function verifyUser(idToken){if(typeof idToken!=='string'||idToken.length>8192)throw Error('token');const parts=idToken.split('.');if(parts.length!==3)throw Error('token');const header=JSON.parse(new TextDecoder().decode(unbase64url(parts[0]))),payload=JSON.parse(new TextDecoder().decode(unbase64url(parts[1])));const now=Math.floor(Date.now()/1000);if(header.alg!=='RS256'||!header.kid||payload.aud!==PROJECT||payload.iss!==`https://securetoken.google.com/${PROJECT}`||!payload.sub||payload.sub.length>128||!payload.email_verified||payload.exp<=now||payload.iat>now||payload.auth_time>now)throw Error('claims');const res=await fetch('https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com');if(!res.ok)throw Error('keys');const jwks=await res.json();const jwk=jwks.keys?.find(k=>k.kid===header.kid);if(!jwk)throw Error('kid');const key=await crypto.subtle.importKey('jwk',jwk,{name:'RSASSA-PKCS1-v1_5',hash:'SHA-256'},false,['verify']);const valid=await crypto.subtle.verify('RSASSA-PKCS1-v1_5',key,unbase64url(parts[2]),enc.encode(parts[0]+'.'+parts[1]));if(!valid)throw Error('signature');return payload.sub;}
+const base=`https://firestore.googleapis.com/v1/projects/${PROJECT}/databases/(default)/documents`;
+async function fsGet(path,access){const r=await fetch(base+'/'+path,{headers:{authorization:'Bearer '+access}});if(r.status===404)return null;if(!r.ok)throw Error('firestore get '+r.status);return r.json();}
+async function fsList(path,access,pageSize=30){const r=await fetch(base+'/'+path+'?pageSize='+pageSize,{headers:{authorization:'Bearer '+access}});if(!r.ok)throw Error('firestore list '+r.status);return (await r.json()).documents||[];}
+function val(f,k){const v=f?.[k];return v?.stringValue??v?.integerValue??v?.timestampValue??v?.booleanValue??null;}
+function arr(f,k){return (f?.[k]?.arrayValue?.values||[]).map(v=>v.stringValue).filter(Boolean);}
+async function receipt(path,access){const name='pushReceipts/'+encodeURIComponent(path.replaceAll('/','_'));const url=base+'/'+name+'?currentDocument.exists=false';const r=await fetch(url,{method:'PATCH',headers:{authorization:'Bearer '+access,'content-type':'application/json'},body:JSON.stringify({fields:{createdAt:{timestampValue:new Date().toISOString()}}})});return r.ok;}
+async function sendOne(token,data,access){const r=await fetch(`https://fcm.googleapis.com/v1/projects/${PROJECT}/messages:send`,{method:'POST',headers:{authorization:'Bearer '+access,'content-type':'application/json'},body:JSON.stringify({message:{token,data,webpush:{headers:{TTL:'3600',Urgency:'high'}}}})});return r.ok;}
+async function handler(request,env){const url=new URL(request.url);if(url.pathname==='/health'&&request.method==='GET')return json({ok:true,service:'PASURA Chat FCM worker',configured:Boolean(env.FIREBASE_SERVICE_ACCOUNT)});if(request.method==='OPTIONS')return new Response(null,{status:204,headers:{'access-control-allow-origin':ORIGIN,'access-control-allow-methods':'POST, OPTIONS','access-control-allow-headers':'authorization, content-type','access-control-max-age':'3600'}});if(url.pathname!=='/notify'||request.method!=='POST')return json({error:'Not found'},404);if(request.headers.get('origin')!==ORIGIN)return json({error:'Origin not allowed'},403);if(!env.FIREBASE_SERVICE_ACCOUNT)return json({error:'Server not configured'},503);let body;try{body=await request.json();}catch{return json({error:'Invalid JSON'},400);}const kind=body?.kind,chatId=body?.chatId,messageId=body?.messageId;if(!['private','group'].includes(kind)||![chatId,messageId].every(s=>typeof s==='string'&&/^[A-Za-z0-9_-]{1,180}$/.test(s)))return json({error:'Invalid request'},400);let uid;try{uid=await verifyUser((request.headers.get('authorization')||'').replace(/^Bearer /,''));}catch{return json({error:'Invalid user token'},401);}try{const access=await oauth(JSON.parse(env.FIREBASE_SERVICE_ACCOUNT));const profile=await fsGet('users/'+encodeURIComponent(uid),access);if(!profile||val(profile.fields,'status')!=='active')return json({error:'Inactive account'},403);const folder=kind==='private'?'conversations':'groups';const chat=await fsGet(folder+'/'+encodeURIComponent(chatId),access);if(!chat)return json({error:'Conversation missing'},404);const members=arr(chat.fields,kind==='private'?'participants':'members');if(!members.includes(uid)||members.length<2||members.length>20)return json({error:'Not a member'},403);const msg=await fsGet(folder+'/'+encodeURIComponent(chatId)+'/messages/'+encodeURIComponent(messageId),access);if(!msg||val(msg.fields,'senderId')!==uid)return json({error:'Message mismatch'},403);const stamp=Date.parse(val(msg.fields,'createdAt'));if(!Number.isFinite(stamp)||Math.abs(Date.now()-stamp)>10*60*1000)return json({error:'Message expired'},409);if(!await receipt(kind+'_'+chatId+'_'+messageId,access))return json({ok:true,duplicate:true});let delivered=0,attempted=0;for(const member of members.filter(x=>x!==uid)){const recipient=await fsGet('users/'+encodeURIComponent(member),access);if(!recipient||val(recipient.fields,'status')!=='active')continue;const docs=await fsList('users/'+encodeURIComponent(member)+'/fcmTokens',access,10);for(const d of docs){const token=val(d.fields,'token');if(!token||token.length>4096)continue;attempted++;if(await sendOne(token,{type:'message',chatId,kind,messageId},access))delivered++;}}return json({ok:true,attempted,delivered});}catch(e){console.error('notify failure',String(e));return json({error:'Notification processing failed'},502);}}
+export default {fetch:handler};
