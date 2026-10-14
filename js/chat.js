@@ -370,6 +370,16 @@ $('messageForm').addEventListener('submit',async e=>{
   if(externalLinks.length)message.linkStatus='pending';
   if(attachment)message.attachment={id:attachment.id,name:attachment.name,mimeType:attachment.mimeType,size:attachment.size,conversationId:conversationIdValue,kind};
   const sent=await addDoc(collection(db,kind==='group'?'groups':'conversations',conversationIdValue,'messages'),message);
+   // V18: authenticate push request; never include PUSH_API_SECRET in browser code.
+   try {
+     const idToken=await auth.currentUser.getIdToken();
+     const pushResponse=await fetch('https://pasura-chat.mainanaq.workers.dev/notify',{
+       method:'POST',headers:{'content-type':'application/json','authorization':'Bearer '+idToken},
+       body:JSON.stringify({kind,chatId:conversationIdValue,messageId:sent.id})
+     });
+     if(!pushResponse.ok)console.warn('Push V18:',pushResponse.status,await pushResponse.text());
+   } catch(pushError) {console.warn('Push V18 tidak tersedia; pesan tetap terkirim:',pushError);}
+
   if(externalLinks.length){try{await setDoc(doc(db,'linkReviews',sent.id),{kind:kind==='group'?'groups':'conversations',chatId:conversationIdValue,messageId:sent.id,senderId:self.uid,urls:externalLinks,reviewStatus:'pending',createdAt:serverTimestamp()});}catch(reviewErr){console.error('Moderasi link gagal dicatat',reviewErr);status('Pesan terkirim, tetapi permohonan link gagal tercatat. Hubungi admin.');}}
   $('messageText').value='';clearAttachment();status('');
  }catch(err){status('Pesan/lampiran gagal dikirim: '+err.message);}
