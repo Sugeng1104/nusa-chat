@@ -1,38 +1,43 @@
-const {onCall,HttpsError}=require('firebase-functions/v2/https');
-const admin=require('firebase-admin');
-admin.initializeApp();
-const db=admin.firestore();
-const region='asia-southeast2';
-const clean=(v,n=120)=>String(v||'').trim().slice(0,n);
-const requireAuth=(req)=>{if(!req.auth)throw new HttpsError('unauthenticated','Silakan login.');return req.auth.uid;};
-async function actor(req){const uid=requireAuth(req);const s=await db.doc(`users/${uid}`).get();if(!s.exists||s.data().status!=='active')throw new HttpsError('permission-denied','Akun belum aktif.');const authUser=await admin.auth().getUser(uid);if(authUser.disabled||!authUser.emailVerified)throw new HttpsError('permission-denied','Akun Firebase tidak aktif atau email belum terverifikasi.');return {uid,...s.data()};}
-function canManage(a,u){return a.role==='super_admin'||(a.role==='org_admin'&&a.orgId===u.orgId);}
-exports.registerProfile=onCall({region,enforceAppCheck:false},async req=>{
- const uid=requireAuth(req),name=clean(req.data?.name,80),orgId=clean(req.data?.orgId,100);
- if(name.length<2||!orgId)throw new HttpsError('invalid-argument','Nama dan instansi wajib diisi.');
- const authUser=await admin.auth().getUser(uid);
- if(!authUser.email||!authUser.emailVerified)throw new HttpsError('failed-precondition','Verifikasi email dahulu.');
- const org=await db.doc(`organizations/${orgId}`).get();if(!org.exists||org.data().active!==true)throw new HttpsError('invalid-argument','Instansi tidak tersedia.');
- const ref=db.doc(`users/${uid}`);
- await db.runTransaction(async tx=>{const existing=await tx.get(ref);if(existing.exists)throw new HttpsError('already-exists','Profil sudah terdaftar.');tx.create(ref,{name,email:authUser.email,orgId,role:'member',status:'pending',createdAt:admin.firestore.FieldValue.serverTimestamp()});});
- return {ok:true};
-});
-exports.reviewUser=onCall({region},async req=>{
- const a=await actor(req),targetUid=clean(req.data?.uid,128),decision=req.data?.decision;
- if(!['active','rejected'].includes(decision)||!targetUid)throw new HttpsError('invalid-argument','Keputusan tidak valid.');
- const ref=db.doc(`users/${targetUid}`);await db.runTransaction(async tx=>{const snap=await tx.get(ref);if(!snap.exists)throw new HttpsError('not-found','Pengguna tidak ditemukan.');const u=snap.data();if(!canManage(a,u)||u.status!=='pending'||u.role!=='member')throw new HttpsError('permission-denied','Tidak diizinkan.');tx.update(ref,{status:decision,reviewedBy:a.uid,reviewedAt:admin.firestore.FieldValue.serverTimestamp()});});return {ok:true};
-});
-exports.listPending=onCall({region},async req=>{
- const a=await actor(req);if(!['super_admin','org_admin'].includes(a.role))throw new HttpsError('permission-denied','Khusus admin.');
- let q=db.collection('users').where('status','==','pending');if(a.role==='org_admin')q=q.where('orgId','==',a.orgId);const s=await q.limit(100).get();return {users:s.docs.map(d=>({uid:d.id,name:d.data().name,email:d.data().email,orgId:d.data().orgId}))};
-});
-exports.createOrganization=onCall({region},async req=>{
- const a=await actor(req);if(a.role!=='super_admin')throw new HttpsError('permission-denied','Khusus Super Admin.');
- const id=clean(req.data?.id,50).toLowerCase(),name=clean(req.data?.name,120);
- if(!/^[a-z0-9-]{3,50}$/.test(id)||name.length<3)throw new HttpsError('invalid-argument','ID atau nama instansi tidak valid.');
- await db.doc(`organizations/${id}`).create({name,active:true,createdAt:admin.firestore.FieldValue.serverTimestamp()});return {ok:true};
-});
-exports.assignOrgAdmin=onCall({region},async req=>{
- const a=await actor(req);if(a.role!=='super_admin')throw new HttpsError('permission-denied','Khusus Super Admin.');
- const uid=clean(req.data?.uid,128);if(!uid||uid===a.uid)throw new HttpsError('invalid-argument','UID tidak valid.');const ref=db.doc(`users/${uid}`);await db.runTransaction(async tx=>{const s=await tx.get(ref);if(!s.exists||s.data().status!=='active'||s.data().role!=='member'||!s.data().orgId)throw new HttpsError('failed-precondition','Pengguna harus anggota aktif pada suatu instansi.');tx.update(ref,{role:'org_admin'});});return {ok:true};
+const {onDocumentCreated,onDocumentUpdated}=require('firebase-functions/v2/firestore');
+const {initializeApp}=require('firebase-admin/app');
+const {getFirestore}=require('firebase-admin/firestore');
+const {getMessaging}=require('firebase-admin/messaging');
+initializeApp();
+const db=getFirestore();
+async function pushTo(recipients,data){
+  const unique=[...new Set(recipients)].filter(Boolean);
+  for(const uid of unique){
+    const user=await db.doc(`users/${uid}`).get();
+    if(!user.exists||user.data().status!=='active')continue;
+    const docs=await db.collection(`users/${uid}/fcmTokens`).get();
+    const entries=docs.docs.filter(d=>typeof d.data().token==='string');
+    if(!entries.length)continue;
+    const tokens=entries.map(d=>d.data().token);
+    const response=await getMessaging().sendEachForMulticast({tokens,data});
+    const bad=[];
+    response.responses.forEach((r,i)=>{
+      if(r.success)return;
+      const code=r.error?.code||'';
+      if(['messaging/registration-token-not-registered','messaging/invalid-registration-token'].includes(code))bad.push(entries[i].ref.delete());
+      else console.warn('FCM delivery failed',uid,code);
+    });
+    if(bad.length)await Promise.allSettled(bad);
+  }
+}
+async function onMessage(event,kind){
+  const d=event.data?.data();if(!d?.senderId)return;
+  const chatId=event.params.chatId;
+  const parent=await db.doc(`${kind}/${chatId}`).get();if(!parent.exists)return;
+  const users=kind==='groups'?parent.data().members:parent.data().participants;
+  if(!Array.isArray(users)||!users.includes(d.senderId))return;
+  await pushTo(users.filter(uid=>uid!==d.senderId),{type:'message',chatId:String(chatId),kind});
+}
+exports.privateMessagePush=onDocumentCreated({document:'conversations/{chatId}/messages/{messageId}',region:'asia-southeast2'},e=>onMessage(e,'conversations'));
+exports.groupMessagePush=onDocumentCreated({document:'groups/{chatId}/messages/{messageId}',region:'asia-southeast2'},e=>onMessage(e,'groups'));
+// Call creation precedes SDP offer. Notify only when the offer is written.
+exports.incomingCallPush=onDocumentUpdated({document:'calls/{callId}',region:'asia-southeast2'},async e=>{
+ const before=e.data.before.data(),after=e.data.after.data();
+ if(!before||!after||before.offer||!after.offer||after.status!=='ringing')return;
+ if(!after.callerId||!after.calleeId||after.callerId===after.calleeId)return;
+ await pushTo([after.calleeId],{type:'call',callId:String(e.params.callId),kind:after.kind==='video'?'video':'audio'});
 });
