@@ -19,7 +19,34 @@ soundBtn.addEventListener('click',()=>{soundOn=!soundOn;localStorage.setItem('nu
 function playSound(){if(!soundOn)return;try{unlockAudio();if(!audioCtx||audioCtx.state!=='running')return;const t=audioCtx.currentTime;for(const [delay,freq] of [[0,740],[.15,990]]){const osc=audioCtx.createOscillator(),gain=audioCtx.createGain();osc.type='sine';osc.frequency.value=freq;gain.gain.setValueAtTime(.0001,t+delay);gain.gain.exponentialRampToValueAtTime(.07,t+delay+.015);gain.gain.exponentialRampToValueAtTime(.0001,t+delay+.13);osc.connect(gain);gain.connect(audioCtx.destination);osc.start(t+delay);osc.stop(t+delay+.14);}}catch(e){console.warn('Bunyi notifikasi dibatasi browser',e);}}
 function drawNotifyPermission(){if(!('Notification'in window)){notifyBtn.textContent='🔕 Tidak didukung';notifyBtn.disabled=true;return;}const p=Notification.permission;notifyBtn.textContent=p==='granted'?'🔔 Aktif':p==='denied'?'🔕 Diblokir':'🔔 Aktifkan';notifyBtn.title=p==='denied'?'Izinkan notifikasi melalui pengaturan situs browser':'Izin notifikasi sistem';}
 drawNotifyPermission();
-notifyBtn.addEventListener('click',async()=>{unlockAudio();if(!('Notification'in window))return;try{if(Notification.permission==='default')await Notification.requestPermission();drawNotifyPermission();}catch(e){console.warn('Izin notifikasi gagal',e);}});
+// V17: FCM registration is deliberately initiated by user action.
+async function pasuraEnablePush(){
+ const u=auth.currentUser;
+ if(!u)throw Error('Masuk terlebih dahulu.');
+ if(!('serviceWorker' in navigator)||!('Notification' in window))throw Error('Browser tidak mendukung Web Push.');
+ if(Notification.permission==='default')await Notification.requestPermission();
+ if(Notification.permission!=='granted')throw Error('Izin notifikasi belum diberikan.');
+ const {getMessaging,getToken,isSupported}=await import('https://www.gstatic.com/firebasejs/10.14.1/firebase-messaging.js');
+ if(!await isSupported())throw Error('Firebase Messaging tidak didukung browser ini.');
+ const reg=await navigator.serviceWorker.register('./firebase-messaging-sw.js',{type:'module',scope:'./'});
+ await navigator.serviceWorker.ready;
+ const vapidKey=PASURA_VAPID_KEY;
+ if(!vapidKey||vapidKey.includes('ISI_'))throw Error('Isi VAPID public key pada js/chat.js sebelum mengaktifkan push.');
+ const token=await getToken(getMessaging(app),{vapidKey,serviceWorkerRegistration:reg});
+ if(!token)throw Error('Token FCM belum tersedia.');
+ const raw=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(token));
+ const tokenId=Array.from(new Uint8Array(raw),b=>b.toString(16).padStart(2,'0')).join('');
+ await setDoc(doc(db,'users',u.uid,'fcmTokens',tokenId),{token,updatedAt:serverTimestamp(),platform:'web'});
+ localStorage.setItem('pasura-fcm-token-id-'+u.uid,tokenId);
+ notifyBtn.textContent='🔔 Push aktif';
+}
+const PASURA_VAPID_KEY='ISI_VAPID_PUBLIC_KEY_DARI_FIREBASE_CONSOLE';
+notifyBtn.addEventListener('click',async()=>{
+ unlockAudio();notifyBtn.disabled=true;
+ try{await pasuraEnablePush();status('Notifikasi push Android berhasil diaktifkan.');}
+ catch(e){status('Push: '+e.message);drawNotifyPermission();}
+ finally{notifyBtn.disabled=false;}
+});
 const alerted=new Map();
 function incomingAlert(key,message,stamp){if(stamp<=notifyStartedAt||message.senderId===self?.uid)return;const last=alerted.get(key)||0;if(stamp<=last)return;alerted.set(key,stamp);playSound();if(document.visibilityState!=='visible'&&'Notification'in window&&Notification.permission==='granted'){try{const n=new Notification('Pesan baru • NUSA CHAT',{body:'Anda menerima pesan baru',tag:'nusa-chat-'+key,icon:'icons/asn-3d.png'});n.onclick=()=>{window.focus();n.close();};}catch(e){console.warn('Notifikasi sistem dibatasi browser',e);}}}
 const mobileLayout=document.querySelector('.chat-layout');
