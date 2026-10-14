@@ -1,0 +1,5 @@
+
+name = "pasura-chat"
+main = "cloudflare/worker.js"
+compatibility_date = "2026-10-14"
+workers_dev = true
