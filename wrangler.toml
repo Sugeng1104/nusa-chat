@@ -3,3 +3,11 @@ name = "pasura-chat"
 main = "cloudflare/worker.js"
 compatibility_date = "2026-10-14"
 workers_dev = true
+
+name = "pasura-chat"
+main = "cloudflare/worker.js"
+compatibility_date = "2026-10-14"
+workers_dev = true
+
+[secrets]
+required = ["FIREBASE_SERVICE_ACCOUNT", "PUSH_API_SECRET"]
