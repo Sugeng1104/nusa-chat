@@ -40,7 +40,7 @@ async function pasuraEnablePush(){
  localStorage.setItem('pasura-fcm-token-id-'+u.uid,tokenId);
  notifyBtn.textContent='🔔 Push aktif';
 }
-const PASURA_VAPID_KEY='ISI_VAPID_PUBLIC_KEY_DARI_FIREBASE_CONSOLE';
+const PASURA_VAPID_KEY='BIyn-83I3WH86p9j3SSyNNkVgBXPrfWPSkHxxBUU7uAV4YAXweBCq0yWKBPh0467U-jOBFKWenhsb6FRm9XU-K8';
 notifyBtn.addEventListener('click',async()=>{
  unlockAudio();notifyBtn.disabled=true;
  try{await pasuraEnablePush();status('Notifikasi push Android berhasil diaktifkan.');}
